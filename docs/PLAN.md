@@ -53,7 +53,7 @@ arduino/SerialRPC/                 # Arduino library (arduino-cli installable vi
 host/include/
   serialport.hpp                   # merged header-only SerialPort (from src/)
   serial_rpc.hpp                   # header-only RPC client; includes the shared headers above
-host/examples/rpc_cli.cpp          # cxxopts + fmt: `rpc_cli -p /dev/cu.usbmodem1 set_led 13 true`
+host/tools/rpc_repl/               # replxx REPL + one-shot CLI: `rpc_repl -p /dev/cu.usbmodem1 set_led 13 true`
 tests/                             # doctest via FetchContent
 CMakeLists.txt                     # host lib (INTERFACE), examples, tests; include path to arduino/SerialRPC/src
 ```
@@ -165,10 +165,41 @@ There is a single source of truth for the codec and the framing: the host includ
   - `poll()` pumps incoming notifications when no call is in flight.
   - It is single-threaded, like `SerialPort`.
 
+### 7. `rpc_repl`, an interactive REPL and one-shot CLI (replaces `rpc_cli`)
+- **Line editor:** [replxx](https://github.com/AmokHuginnsson/replxx) via FetchContent. It gives history (`~/.rpc_repl_history`), Tab completion, and a thread-safe `print()` that redraws the prompt. Incoming traffic scrolls above the prompt, and the prompt keeps the line being typed. No full-screen TUI; a `--tui` mode (FTXUI) is a possible later addition.
+- **Threads:** a single I/O thread owns the `SerialPort` and the `RPC` object. It loops on `rpc.poll()` with a short timeout and drains a command queue fed by the REPL thread. It posts results back through `replxx.print()`. The REPL thread never touches the port.
+- **Output:** colour-coded by kind with fmt, and `--no-color` turns it off. Each line carries a timestamp (`HH:MM:SS.mmm`). The kinds:
+  - `[log L]` framed logs, coloured by level
+  - `[evt]` notifications
+  - `[txt]` raw text lines, dimmed
+  - `→` outgoing calls
+  - `←` results with round-trip time, or errors in red
+- **Call syntax:** shell-style tokens. Each token is parsed as a JSON literal with nlohmann/json and then converted to MsgPack; a token that isn't valid JSON is taken as a string. Quoted strings may contain spaces. Examples: `set_led 13 true`, `cfg {"kp":1.5}`, `echo "hi there"`.
+- **Meta-commands:**
+  - `.help`
+  - `.list`, which shows method signatures
+  - `.attach` / `.detach`
+  - `.notify <method> args…`
+  - `.text <line>`
+  - `.reset`, which pulses DTR
+  - `.reconnect`
+  - `.filter [+|-]log|evt|txt`
+  - `.timeout <ms>`
+  - `.quit` (Ctrl-D also quits)
+- **Completion:** method names come from `rpc.list`, which is refreshed on attach, plus the meta-commands. When the device reports signatures, a hint shows the expected arguments.
+- **Resilience:** on an I/O error or unplug, the I/O thread closes the port and retries opening it every 500 ms, then re-attaches, logging `[sys]` lines as it goes. This lets you re-flash the board while the REPL keeps running.
+- **Modes:**
+  - `rpc_repl -p PORT [-b BAUD]` starts the REPL.
+  - `rpc_repl -p PORT method args…` makes one call, prints the result as JSON on stdout, and exits non-zero on error. This is meant for scripts.
+  - `rpc_repl -p PORT --monitor` only shows traffic.
+  - `-p` is optional when `SerialPort::available_ports()` finds exactly one likely board (`usbmodem`/`usbserial`/`ttyACM`/`ttyUSB`/`COM`).
+- **Device-side support:** `rpc.list` returns `[name, signature]` pairs, for example `["set_led","(u8,bool)->nil"]`. The typed thunks generate the signature strings at compile time. Raw handlers report `"(...)"`. On AVR the strings live in PROGMEM where practical.
+- **Files:** `host/tools/rpc_repl/` holds `main.cpp` (cxxopts), `repl.hpp`, `io_worker.hpp` and `json_value.hpp` (conversion between JSON and `Value`). There is a CMake target `rpc_repl`. The JSON conversion and token parsing are unit-tested; the terminal parts are tested manually.
+
 ### 6. Build
 - **CMake** (`cmake -Bbuild -G Ninja && cmake --build build`), with FetchContent for `fmt`, `cxxopts` and `doctest`. Targets:
   - `serial_rpc` (INTERFACE)
-  - `rpc_cli`
+  - `rpc_repl`
   - `serial_rpc_tests`
 - **Arduino:** `arduino-cli compile -b arduino:avr:uno --library arduino/SerialRPC arduino/SerialRPC/examples/Blink`. Also compile once for a 32-bit core, e.g. `arduino:samd:mkr1000` or `esp32:esp32:esp32`, if that core is installed.
 
@@ -193,7 +224,8 @@ There is a single source of truth for the codec and the framing: the host includ
    - `on_text`
 4. Merge `serialport.hpp` into a header-only version and build it on macOS.
 5. `serial_rpc.hpp` + a test that runs the host `RPC` against the device `Server` over an in-memory pipe, templating `RPC` on the port type.
-6. `Blink.ino` + `rpc_cli`, then compile with arduino-cli for AVR.
+6. `Blink.ino` (done in step 3). `rpc_cli` is folded into step 7.
+7. `rpc.list` signatures on the device, then `rpc_repl` (component 7): unit tests for the JSON↔Value conversion and token parsing, then a manual session against Blink on the board.
 
 ## Verification
 - **Unit tests:** `cmake -Bbuild -G Ninja && cmake --build build && ctest --test-dir build`. These cover the codec, the framing, the server dispatch, and an end-to-end in-memory host⇄device loop.
@@ -201,9 +233,9 @@ There is a single source of truth for the codec and the framing: the host includ
 - **AVR build:** `arduino-cli compile -b arduino:avr:uno ...` must succeed. Check the flash and RAM report, aiming for under 1 KB of RAM on the Uno for the example.
 - **STL build:** compile the same Blink example plus an `examples/StlFeatures` sketch for one 32-bit core that is installed, e.g. `esp32:esp32:esp32` or `arduino:samd:mkrzero`. Confirm that `StlFeatures` fails on AVR with the intended `static_assert` message.
 - **Hardware smoke test** (if a board is attached): upload Blink, then run:
-  - `rpc_cli -p <port> rpc.list`
-  - `rpc_cli -p <port> set_led 13 true`, and confirm the LED toggles
-  - `rpc_cli -p <port> get_temp`
-  - `rpc_cli -p <port> --monitor`, which attaches and prints framed logs, events and raw text
+  - `rpc_repl -p <port> rpc.list`
+  - `rpc_repl -p <port> set_led 13 true`, and confirm the LED toggles
+  - `rpc_repl -p <port> get_temp`
+  - `rpc_repl -p <port> --monitor`, which attaches and prints framed logs, events and raw text
   - With the host detached, the Arduino IDE Serial Monitor shows clean text logs.
 - **Portability:** the host headers must compile warning-free with Clang at `-Wall -Wextra`. The Windows path is compile-checked only by review unless an MSVC environment is available.
