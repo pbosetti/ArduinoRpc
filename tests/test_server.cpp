@@ -22,12 +22,12 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <utility>
 #include <vector>
 
 #if SERIAL_RPC_USE_STL
 #include <array>
 #include <tuple>
-#include <utility>
 #endif
 
 using serial_rpc::Args;
@@ -165,6 +165,22 @@ ParsedResponse parse_response(const std::vector<uint8_t> &payload) {
 /// attach-timeout tests don't depend on wall-clock time.
 uint32_t g_fake_now = 0;
 uint32_t fake_clock() { return g_fake_now; }
+
+/// Reads one `[name, signature]` pair off an rpc.list result array, as
+/// produced by the new Server::pack_method_list_ (docs/PLAN.md component 7's
+/// "Device-side support" bullet).
+std::pair<std::string, std::string> read_list_entry(Reader &r) {
+  size_t n;
+  r.read_array(n);
+  REQUIRE(n == 2);
+  const char *p;
+  size_t l;
+  r.read_str(p, l);
+  std::string name(p, l);
+  r.read_str(p, l);
+  std::string sig(p, l);
+  return std::make_pair(name, sig);
+}
 
 } // namespace
 
@@ -489,7 +505,7 @@ TEST_CASE("rpc.ping returns the protocol version") {
   CHECK(version == static_cast<int>(serial_rpc::kProtocolVersion));
 }
 
-TEST_CASE("rpc.list excludes built-ins and lists exactly the bound methods") {
+TEST_CASE("rpc.list excludes built-ins and lists [name, signature] pairs for the bound methods") {
   MockStream s;
   TestServer rpc(s);
   rpc.begin();
@@ -509,16 +525,249 @@ TEST_CASE("rpc.list excludes built-ins and lists exactly the bound methods") {
   size_t n;
   rr.read_array(n);
   REQUIRE(n == 2);
-  std::vector<std::string> names;
-  for (size_t i = 0; i < n; ++i) {
-    const char *p;
-    size_t l;
-    rr.read_str(p, l);
-    names.emplace_back(p, l);
-  }
-  CHECK(names[0] == "alpha");
-  CHECK(names[1] == "beta");
+  const auto e0 = read_list_entry(rr);
+  const auto e1 = read_list_entry(rr);
+  CHECK(e0.first == "alpha");
+  CHECK(e0.second == "()->nil");
+  CHECK(e1.first == "beta");
+  CHECK(e1.second == "()->nil");
   CHECK(rpc.handler_count() == 2);
+}
+
+// ===========================================================================
+// rpc.list: signature strings (docs/PLAN.md component 7's "Device-side
+// support" bullet). One handler (or a couple of closely related ones) per
+// case, so every result comfortably fits kResultScratch (64 bytes) --
+// exercising the "response too large" fallback and rpc.list's paging
+// `start` arg is covered separately, below.
+// ===========================================================================
+
+TEST_CASE("rpc.list: signature for a free function (two scalar args, nil return)") {
+  MockStream s;
+  TestServer rpc(s);
+  rpc.begin();
+  struct Local {
+    static void set_led(uint8_t pin, bool on) {
+      (void)pin;
+      (void)on;
+    }
+  };
+  rpc.bind("set_led", Local::set_led);
+
+  s.tx.clear();
+  send_request(s, 1, "rpc.list");
+  rpc.poll();
+
+  const auto frames = decode_frames(s.tx);
+  REQUIRE(frames.size() == 1);
+  const auto pr = parse_response(frames[0]);
+  REQUIRE(pr.well_formed);
+  Reader rr(frames[0].data() + pr.result_pos, frames[0].size() - pr.result_pos);
+  size_t n;
+  rr.read_array(n);
+  REQUIRE(n == 1);
+  const auto e = read_list_entry(rr);
+  CHECK(e.first == "set_led");
+  CHECK(e.second == "(u8,bool)->nil");
+}
+
+TEST_CASE("rpc.list: signature for a lambda (int args, int return)") {
+  MockStream s;
+  TestServer rpc(s);
+  rpc.begin();
+  rpc.bind("add", [](int a, int b) -> int { return a + b; });
+
+  s.tx.clear();
+  send_request(s, 1, "rpc.list");
+  rpc.poll();
+
+  const auto frames = decode_frames(s.tx);
+  REQUIRE(frames.size() == 1);
+  const auto pr = parse_response(frames[0]);
+  REQUIRE(pr.well_formed);
+  Reader rr(frames[0].data() + pr.result_pos, frames[0].size() - pr.result_pos);
+  size_t n;
+  rr.read_array(n);
+  REQUIRE(n == 1);
+  const auto e = read_list_entry(rr);
+  CHECK(e.first == "add");
+  CHECK(e.second == "(i32,i32)->i32"); // sizeof(int) == 4 on the host
+}
+
+TEST_CASE("rpc.list: signature for a zero-argument handler is ()->nil") {
+  MockStream s;
+  TestServer rpc(s);
+  rpc.begin();
+  rpc.bind("reset", []() {});
+
+  s.tx.clear();
+  send_request(s, 1, "rpc.list");
+  rpc.poll();
+
+  const auto frames = decode_frames(s.tx);
+  REQUIRE(frames.size() == 1);
+  const auto pr = parse_response(frames[0]);
+  REQUIRE(pr.well_formed);
+  Reader rr(frames[0].data() + pr.result_pos, frames[0].size() - pr.result_pos);
+  size_t n;
+  rr.read_array(n);
+  REQUIRE(n == 1);
+  const auto e = read_list_entry(rr);
+  CHECK(e.first == "reset");
+  CHECK(e.second == "()->nil");
+}
+
+TEST_CASE("rpc.list: signatures for non-const and const member functions") {
+  MockStream s;
+  TestServer rpc(s);
+  rpc.begin();
+  Motor motor;
+  rpc.bind("set_speed", motor, &Motor::set_speed); // non-const, one int arg, nil return
+  rpc.bind("get_speed", motor, &Motor::get_speed); // const, no args, int return
+
+  s.tx.clear();
+  send_request(s, 1, "rpc.list");
+  rpc.poll();
+
+  const auto frames = decode_frames(s.tx);
+  REQUIRE(frames.size() == 1);
+  const auto pr = parse_response(frames[0]);
+  REQUIRE(pr.well_formed);
+  Reader rr(frames[0].data() + pr.result_pos, frames[0].size() - pr.result_pos);
+  size_t n;
+  rr.read_array(n);
+  REQUIRE(n == 2);
+  const auto e0 = read_list_entry(rr);
+  const auto e1 = read_list_entry(rr);
+  CHECK(e0.first == "set_speed");
+  CHECK(e0.second == "(i32)->nil");
+  CHECK(e1.first == "get_speed");
+  CHECK(e1.second == "()->i32");
+}
+
+TEST_CASE("rpc.list: signature for a const char* argument and return value is str") {
+  MockStream s;
+  TestServer rpc(s);
+  rpc.begin();
+  rpc.bind("greet", [](const char *name) -> const char * { return name; });
+
+  s.tx.clear();
+  send_request(s, 1, "rpc.list");
+  rpc.poll();
+
+  const auto frames = decode_frames(s.tx);
+  REQUIRE(frames.size() == 1);
+  const auto pr = parse_response(frames[0]);
+  REQUIRE(pr.well_formed);
+  Reader rr(frames[0].data() + pr.result_pos, frames[0].size() - pr.result_pos);
+  size_t n;
+  rr.read_array(n);
+  REQUIRE(n == 1);
+  const auto e = read_list_entry(rr);
+  CHECK(e.first == "greet");
+  CHECK(e.second == "(str)->str");
+}
+
+TEST_CASE("rpc.list: signature for a bind_raw handler is always (...)->any") {
+  MockStream s;
+  TestServer rpc(s);
+  rpc.begin();
+  rpc.bind_raw("cfg", [](Args &, Reply &) {});
+
+  s.tx.clear();
+  send_request(s, 1, "rpc.list");
+  rpc.poll();
+
+  const auto frames = decode_frames(s.tx);
+  REQUIRE(frames.size() == 1);
+  const auto pr = parse_response(frames[0]);
+  REQUIRE(pr.well_formed);
+  Reader rr(frames[0].data() + pr.result_pos, frames[0].size() - pr.result_pos);
+  size_t n;
+  rr.read_array(n);
+  REQUIRE(n == 1);
+  const auto e = read_list_entry(rr);
+  CHECK(e.first == "cfg");
+  CHECK(e.second == "(...)->any");
+}
+
+TEST_CASE("rpc.list: start pages through the handler table") {
+  MockStream s;
+  TestServer rpc(s);
+  rpc.begin();
+  rpc.bind("alpha", []() {});
+  rpc.bind("beta", []() {});
+  rpc.bind("gamma", []() {});
+
+  s.tx.clear();
+  send_request(s, 1, "rpc.list", 1); // skip "alpha"
+  rpc.poll();
+
+  auto frames = decode_frames(s.tx);
+  REQUIRE(frames.size() == 1);
+  auto pr = parse_response(frames[0]);
+  REQUIRE(pr.well_formed);
+  CHECK_FALSE(pr.is_error);
+  Reader rr(frames[0].data() + pr.result_pos, frames[0].size() - pr.result_pos);
+  size_t n;
+  rr.read_array(n);
+  REQUIRE(n == 2);
+  const auto e0 = read_list_entry(rr);
+  const auto e1 = read_list_entry(rr);
+  CHECK(e0.first == "beta");
+  CHECK(e1.first == "gamma");
+
+  // start past the end of the table yields an empty (not an error) array.
+  s.tx.clear();
+  send_request(s, 2, "rpc.list", 100);
+  rpc.poll();
+  frames = decode_frames(s.tx);
+  REQUIRE(frames.size() == 1);
+  pr = parse_response(frames[0]);
+  REQUIRE(pr.well_formed);
+  CHECK_FALSE(pr.is_error);
+  Reader rr2(frames[0].data() + pr.result_pos, frames[0].size() - pr.result_pos);
+  rr2.read_array(n);
+  CHECK(n == 0);
+}
+
+TEST_CASE("rpc.list: overflowing the result buffer still yields response too large, and start "
+          "can page around it") {
+  MockStream s;
+  TestServer rpc(s);
+  rpc.begin();
+  // Two 20-char names with a 15-char signature each: one entry is well
+  // under kResultScratch (64 bytes), but two together are not.
+  rpc.bind("long_method_name_aaa", [](uint8_t, bool) {});
+  rpc.bind("long_method_name_bbb", [](uint8_t, bool) {});
+
+  s.tx.clear();
+  send_request(s, 1, "rpc.list");
+  rpc.poll();
+  auto frames = decode_frames(s.tx);
+  REQUIRE(frames.size() == 1);
+  auto pr = parse_response(frames[0]);
+  REQUIRE(pr.well_formed);
+  CHECK(pr.is_error);
+  CHECK(pr.error_msg == "response too large");
+  CHECK(rpc.response_overflow_errors() >= 1);
+
+  // start=1 drops the response to a single entry, which fits.
+  s.tx.clear();
+  send_request(s, 2, "rpc.list", 1);
+  rpc.poll();
+  frames = decode_frames(s.tx);
+  REQUIRE(frames.size() == 1);
+  pr = parse_response(frames[0]);
+  REQUIRE(pr.well_formed);
+  CHECK_FALSE(pr.is_error);
+  Reader rr(frames[0].data() + pr.result_pos, frames[0].size() - pr.result_pos);
+  size_t n;
+  rr.read_array(n);
+  REQUIRE(n == 1);
+  const auto e = read_list_entry(rr);
+  CHECK(e.first == "long_method_name_bbb");
+  CHECK(e.second == "(u8,bool)->nil");
 }
 
 TEST_CASE("rpc.attach replies [version, n_methods] and attaches") {
@@ -961,6 +1210,135 @@ TEST_CASE("STL: std::tuple<Ts...> argument") {
   int result = 0;
   rr.read(result);
   CHECK(result == 6);
+}
+
+// ===========================================================================
+// rpc.list: signature strings for the STL-only extra types (this target
+// only). `str` is shared with const char*; `[T]` for vector, `[T;N]` for
+// array, `[T,U,...]` for pair/tuple (docs/PLAN.md component 7).
+// ===========================================================================
+
+TEST_CASE("rpc.list: signature for a std::string argument/return is str") {
+  MockStream s;
+  TestServer rpc(s);
+  rpc.begin();
+  rpc.bind("shout", [](std::string s2) -> std::string { return s2; });
+
+  s.tx.clear();
+  send_request(s, 1, "rpc.list");
+  rpc.poll();
+
+  const auto frames = decode_frames(s.tx);
+  REQUIRE(frames.size() == 1);
+  const auto pr = parse_response(frames[0]);
+  REQUIRE(pr.well_formed);
+  Reader rr(frames[0].data() + pr.result_pos, frames[0].size() - pr.result_pos);
+  size_t n;
+  rr.read_array(n);
+  REQUIRE(n == 1);
+  const auto e = read_list_entry(rr);
+  CHECK(e.first == "shout");
+  CHECK(e.second == "(str)->str");
+}
+
+TEST_CASE("rpc.list: signature for a std::vector<int> argument is [i32]") {
+  MockStream s;
+  TestServer rpc(s);
+  rpc.begin();
+  rpc.bind("sum", [](std::vector<int> v) -> int {
+    int total = 0;
+    for (int x : v) total += x;
+    return total;
+  });
+
+  s.tx.clear();
+  send_request(s, 1, "rpc.list");
+  rpc.poll();
+
+  const auto frames = decode_frames(s.tx);
+  REQUIRE(frames.size() == 1);
+  const auto pr = parse_response(frames[0]);
+  REQUIRE(pr.well_formed);
+  Reader rr(frames[0].data() + pr.result_pos, frames[0].size() - pr.result_pos);
+  size_t n;
+  rr.read_array(n);
+  REQUIRE(n == 1);
+  const auto e = read_list_entry(rr);
+  CHECK(e.first == "sum");
+  CHECK(e.second == "([i32])->i32");
+}
+
+TEST_CASE("rpc.list: signature for a std::array<int,2> argument is [i32;2]") {
+  MockStream s;
+  TestServer rpc(s);
+  rpc.begin();
+  rpc.bind("dot2", [](std::array<int, 2> v) -> int { return v[0] * v[1]; });
+
+  s.tx.clear();
+  send_request(s, 1, "rpc.list");
+  rpc.poll();
+
+  const auto frames = decode_frames(s.tx);
+  REQUIRE(frames.size() == 1);
+  const auto pr = parse_response(frames[0]);
+  REQUIRE(pr.well_formed);
+  Reader rr(frames[0].data() + pr.result_pos, frames[0].size() - pr.result_pos);
+  size_t n;
+  rr.read_array(n);
+  REQUIRE(n == 1);
+  const auto e = read_list_entry(rr);
+  CHECK(e.first == "dot2");
+  CHECK(e.second == "([i32;2])->i32");
+}
+
+TEST_CASE("rpc.list: signature for a std::pair<int,std::string> argument is [i32,str]") {
+  MockStream s;
+  TestServer rpc(s);
+  rpc.begin();
+  rpc.bind("pair_len", [](std::pair<int, std::string> p) -> int {
+    return p.first + static_cast<int>(p.second.size());
+  });
+
+  s.tx.clear();
+  send_request(s, 1, "rpc.list");
+  rpc.poll();
+
+  const auto frames = decode_frames(s.tx);
+  REQUIRE(frames.size() == 1);
+  const auto pr = parse_response(frames[0]);
+  REQUIRE(pr.well_formed);
+  Reader rr(frames[0].data() + pr.result_pos, frames[0].size() - pr.result_pos);
+  size_t n;
+  rr.read_array(n);
+  REQUIRE(n == 1);
+  const auto e = read_list_entry(rr);
+  CHECK(e.first == "pair_len");
+  CHECK(e.second == "([i32,str])->i32");
+}
+
+TEST_CASE("rpc.list: signature for a std::tuple<int,int,int> argument is [i32,i32,i32]") {
+  MockStream s;
+  TestServer rpc(s);
+  rpc.begin();
+  rpc.bind("tuple_sum", [](std::tuple<int, int, int> t) -> int {
+    return std::get<0>(t) + std::get<1>(t) + std::get<2>(t);
+  });
+
+  s.tx.clear();
+  send_request(s, 1, "rpc.list");
+  rpc.poll();
+
+  const auto frames = decode_frames(s.tx);
+  REQUIRE(frames.size() == 1);
+  const auto pr = parse_response(frames[0]);
+  REQUIRE(pr.well_formed);
+  Reader rr(frames[0].data() + pr.result_pos, frames[0].size() - pr.result_pos);
+  size_t n;
+  rr.read_array(n);
+  REQUIRE(n == 1);
+  const auto e = read_list_entry(rr);
+  CHECK(e.first == "tuple_sum");
+  CHECK(e.second == "([i32,i32,i32])->i32");
 }
 
 #endif // SERIAL_RPC_USE_STL

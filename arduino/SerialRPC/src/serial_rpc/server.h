@@ -68,6 +68,23 @@ inline void *operator new(size_t, void *ptr) noexcept { return ptr; }
 #endif
 
 // ---------------------------------------------------------------------------
+// PROGMEM, for rpc.list's signature-token literals (see the "Signature
+// tokens" section below): on AVR, an ordinary `const char[]` string literal
+// is *not* flash-only -- avr-gcc's default linker script copies .rodata
+// into RAM at startup (via __do_copy_data) so that plain load instructions
+// can address it, exactly the well-known reason the Arduino F()/PROGMEM
+// idiom exists. Measured cost of skipping PROGMEM here: about 20 bytes of
+// RAM for a handful of short tokens in a tiny test sketch -- not
+// acceptable against this library's already-tight AVR RAM budget (see
+// Server's class comment), so the token literals are placed in PROGMEM and
+// read with pgm_read_byte(). Off AVR this header isn't available and isn't
+// needed: PROGMEM/pgm_read_byte are only ever referenced from AVR-only code
+// paths below.
+#if defined(__AVR__)
+#include <avr/pgmspace.h>
+#endif
+
+// ---------------------------------------------------------------------------
 // Trivially-destructible / trivially-copyable checks without <type_traits>.
 //
 // avr-gcc 7.3 does not have the (newer) __is_trivially_destructible /
@@ -303,6 +320,299 @@ struct ArgDecoder<const char *> {
 };
 
 // ===========================================================================
+// Signature tokens (docs/PLAN.md, component 7's "Device-side support"):
+// rpc.list returns `[name, signature]` pairs, e.g.
+// `["set_led", "(u8,bool)->nil"]`. The signature is *never* stored per
+// handler -- that would cost RAM proportional to method count, which the
+// fixed (AVR) backend cannot afford. Instead each bound handler gets one
+// extra function pointer, `SigFn write_sig`, generated at compile time from
+// the same `R(ArgTs...)` the typed thunk itself was deduced from
+// (TypedThunk / MemberThunk / LambdaBinder, above and below). Calling it
+// writes the signature, token by token, into a small buffer that lives on
+// the stack only for the duration of one rpc.list dispatch (`SigBuf`,
+// reused across every handler in the loop -- see `Server::pack_method_list_`).
+// So the permanent RAM cost of this whole feature is exactly one function
+// pointer per handler slot, as PLAN.md's "zero RAM per handler beyond one
+// function pointer" asks for.
+//
+// Type tokens (see PLAN.md): `bool`; `i8/i16/i32/i64`, `u8/u16/u32/u64` by
+// sizeof()+signedness (so AVR `int` -> i16, host `int` -> i32, and AVR
+// `double` -> f32 since it shares float's 4-byte representation there);
+// `f32`/`f64` by sizeof(); `str` for `const char*` and (STL) `std::string`;
+// `nil` for a `void` return. STL extras: `[T]` for `std::vector<T>`,
+// `[T;N]` for `std::array<T,N>`, and `[T,U,...]` for `std::pair`/
+// `std::tuple` (deliberately using `[...]`, not `(...)`, so a pair/tuple
+// argument can't be confused with the outer parameter list). Raw handlers
+// (`bind_raw`) always report `"(...)->any"`, since their argument shape
+// isn't known at compile time.
+namespace sig {
+
+/// A bounded, always-NUL-terminated append cursor into a caller-owned
+/// buffer, used to assemble one signature string on demand. Silently
+/// truncates rather than overflowing (a truncated signature is a cosmetic
+/// nuisance for a client's `.list` display; overflowing the caller's
+/// buffer is not acceptable).
+class SigBuf {
+public:
+  SigBuf(char *buf, size_t cap) : _buf(buf), _cap(cap), _len(0) {
+    if (_cap != 0) _buf[0] = '\0';
+  }
+
+  size_t len() const { return _len; }
+  const char *c_str() const { return _buf; }
+
+  /// Appends `n` bytes already sitting in RAM. Used only for the decimal
+  /// digits of a `std::array`'s N (computed at runtime, so there is no
+  /// literal to put in PROGMEM for it) -- every fixed *token* goes through
+  /// append_token() instead, never this.
+  void append(const char *s, size_t n) {
+    for (size_t i = 0; i < n && _len + 1 < _cap; ++i) _buf[_len++] = s[i];
+    if (_cap != 0) _buf[_len] = '\0';
+  }
+
+  /// Appends one signature token literal. On AVR `tok` points into PROGMEM
+  /// (flash), so it's copied byte by byte with pgm_read_byte() rather than
+  /// dereferenced directly (an ordinary AVR load can't read flash
+  /// addresses); off AVR it's a plain RAM pointer, copied the ordinary way.
+  /// See the PROGMEM comment near the top of this file for why this
+  /// matters: it is what keeps this feature's AVR RAM cost to "one
+  /// function pointer per handler" rather than "one string per token".
+  void append_token(const char *tok) {
+#if defined(__AVR__)
+    for (;;) {
+      const char c = static_cast<char>(pgm_read_byte(tok));
+      if (c == '\0') break;
+      if (_len + 1 >= _cap) break;
+      _buf[_len++] = c;
+      ++tok;
+    }
+    if (_cap != 0) _buf[_len] = '\0';
+#else
+    size_t n = 0;
+    while (tok[n] != '\0') ++n;
+    append(tok, n);
+#endif
+  }
+
+  /// Appends `n`'s decimal digits (used for `std::array<T,N>`'s N).
+  void append_uint(size_t n) {
+    char digits[20]; // enough for a 64-bit value; N is always far smaller
+    size_t count = 0;
+    if (n == 0) {
+      digits[count++] = '0';
+    } else {
+      while (n > 0 && count < sizeof(digits)) {
+        digits[count++] = static_cast<char>('0' + (n % 10));
+        n /= 10;
+      }
+    }
+    while (count > 0) { // digits[] was filled least-significant-first
+      --count;
+      if (_len + 1 >= _cap) break;
+      _buf[_len++] = digits[count];
+    }
+    if (_cap != 0) _buf[_len] = '\0';
+  }
+
+private:
+  char *_buf;
+  size_t _cap;
+  size_t _len;
+};
+
+#if defined(__AVR__)
+#define SERIAL_RPC_SIG_PROGMEM_ PROGMEM
+#else
+#define SERIAL_RPC_SIG_PROGMEM_
+#endif
+
+/// Defines `fn_name(SigBuf&)`, appending the literal `text` token. `text`
+/// is declared PROGMEM on AVR (see the class comment on SigBuf::append_token
+/// and the PROGMEM include comment near the top of this file); `inline` so
+/// the header can be included from more than one translation unit without
+/// a multiple-definition error, with the local static merged the same way
+/// any other inline function's local static is.
+#define SERIAL_RPC_SIG_TOKEN_FN_(fn_name, text)                                                                     \
+  inline void fn_name(SigBuf &out) {                                                                                \
+    static const char kTok[] SERIAL_RPC_SIG_PROGMEM_ = text;                                                        \
+    out.append_token(kTok);                                                                                         \
+  }
+
+SERIAL_RPC_SIG_TOKEN_FN_(append_lparen_, "(")
+SERIAL_RPC_SIG_TOKEN_FN_(append_rparen_, ")")
+SERIAL_RPC_SIG_TOKEN_FN_(append_comma_, ",")
+SERIAL_RPC_SIG_TOKEN_FN_(append_arrow_, "->")
+SERIAL_RPC_SIG_TOKEN_FN_(append_lbracket_, "[")
+SERIAL_RPC_SIG_TOKEN_FN_(append_rbracket_, "]")
+SERIAL_RPC_SIG_TOKEN_FN_(append_semicolon_, ";")
+SERIAL_RPC_SIG_TOKEN_FN_(append_ellipsis_, "...")
+SERIAL_RPC_SIG_TOKEN_FN_(append_any_, "any")
+SERIAL_RPC_SIG_TOKEN_FN_(append_nil_, "nil")
+SERIAL_RPC_SIG_TOKEN_FN_(append_bool_, "bool")
+SERIAL_RPC_SIG_TOKEN_FN_(append_str_, "str")
+SERIAL_RPC_SIG_TOKEN_FN_(append_i8_, "i8")
+SERIAL_RPC_SIG_TOKEN_FN_(append_i16_, "i16")
+SERIAL_RPC_SIG_TOKEN_FN_(append_i32_, "i32")
+SERIAL_RPC_SIG_TOKEN_FN_(append_i64_, "i64")
+SERIAL_RPC_SIG_TOKEN_FN_(append_u8_, "u8")
+SERIAL_RPC_SIG_TOKEN_FN_(append_u16_, "u16")
+SERIAL_RPC_SIG_TOKEN_FN_(append_u32_, "u32")
+SERIAL_RPC_SIG_TOKEN_FN_(append_u64_, "u64")
+SERIAL_RPC_SIG_TOKEN_FN_(append_f32_, "f32")
+SERIAL_RPC_SIG_TOKEN_FN_(append_f64_, "f64")
+
+#undef SERIAL_RPC_SIG_TOKEN_FN_
+#undef SERIAL_RPC_SIG_PROGMEM_
+
+/// Maps a fundamental integer type to its `iN`/`uN` token by `sizeof()` and
+/// signedness (not by type name), per PLAN.md: e.g. `sizeof(T)==2,
+/// Signed==true` covers `short` everywhere and AVR's `int`, while
+/// `sizeof(T)==4, Signed==true` covers host `int` and AVR/host `long`
+/// (whichever happens to be 4 bytes on that target). Only 1/2/4/8-byte
+/// signed and unsigned specializations are ever instantiated, since those
+/// are the only sizes any supported integer type can have.
+template <size_t Size, bool Signed>
+struct IntToken; // primary: intentionally undefined
+
+#define SERIAL_RPC_SIG_INT_TOKEN_(size, is_signed, fn)                                                              \
+  template <>                                                                                                       \
+  struct IntToken<size, is_signed> {                                                                                \
+    static void append(SigBuf &out) { fn(out); }                                                                    \
+  };
+
+SERIAL_RPC_SIG_INT_TOKEN_(1, true, append_i8_)
+SERIAL_RPC_SIG_INT_TOKEN_(1, false, append_u8_)
+SERIAL_RPC_SIG_INT_TOKEN_(2, true, append_i16_)
+SERIAL_RPC_SIG_INT_TOKEN_(2, false, append_u16_)
+SERIAL_RPC_SIG_INT_TOKEN_(4, true, append_i32_)
+SERIAL_RPC_SIG_INT_TOKEN_(4, false, append_u32_)
+SERIAL_RPC_SIG_INT_TOKEN_(8, true, append_i64_)
+SERIAL_RPC_SIG_INT_TOKEN_(8, false, append_u64_)
+
+#undef SERIAL_RPC_SIG_INT_TOKEN_
+
+/// Maps `float`/`double` to `f32`/`f64` by sizeof(), so AVR's 4-byte
+/// `double` reports `f32` (it shares float's representation there; see
+/// msgpack_lite.h's own `pack(double)`/`read(double&)` for the same rule).
+template <size_t Size>
+struct FloatToken; // primary: intentionally undefined
+template <>
+struct FloatToken<4> {
+  static void append(SigBuf &out) { append_f32_(out); }
+};
+template <>
+struct FloatToken<8> {
+  static void append(SigBuf &out) { append_f64_(out); }
+};
+
+/// Primary template: like ArgDecoder<T>/ValuePacker<T> above, an
+/// unsupported type is a compile error here, not silently mis-rendered --
+/// this only fires for a type with no specialization below, which in
+/// practice means a type ArgDecoder/ValuePacker support but this file
+/// forgot to add a matching token for.
+template <class T>
+struct SigToken {
+  static void append(SigBuf &) {
+    static_assert(sizeof(T) == 0,
+                  "serial_rpc: rpc.list has no signature token for this type; add a SigToken<T> specialization "
+                  "alongside its ArgDecoder<T>/ValuePacker<T>");
+  }
+};
+
+template <>
+struct SigToken<void> {
+  static void append(SigBuf &out) { append_nil_(out); }
+};
+template <>
+struct SigToken<bool> {
+  static void append(SigBuf &out) { append_bool_(out); }
+};
+template <>
+struct SigToken<const char *> {
+  static void append(SigBuf &out) { append_str_(out); }
+};
+template <>
+struct SigToken<float> {
+  static void append(SigBuf &out) { FloatToken<sizeof(float)>::append(out); }
+};
+template <>
+struct SigToken<double> {
+  static void append(SigBuf &out) { FloatToken<sizeof(double)>::append(out); }
+};
+
+#define SERIAL_RPC_SIG_INT_(T, is_signed)                                                                           \
+  template <>                                                                                                       \
+  struct SigToken<T> {                                                                                              \
+    static void append(SigBuf &out) { IntToken<sizeof(T), is_signed>::append(out); }                                \
+  };
+
+SERIAL_RPC_SIG_INT_(signed char, true)
+SERIAL_RPC_SIG_INT_(short, true) // NOLINT(*-runtime-int)
+SERIAL_RPC_SIG_INT_(int, true)
+SERIAL_RPC_SIG_INT_(long, true) // NOLINT(*-runtime-int)
+SERIAL_RPC_SIG_INT_(long long, true) // NOLINT(*-runtime-int)
+SERIAL_RPC_SIG_INT_(unsigned char, false)
+SERIAL_RPC_SIG_INT_(unsigned short, false) // NOLINT(*-runtime-int)
+SERIAL_RPC_SIG_INT_(unsigned int, false)
+SERIAL_RPC_SIG_INT_(unsigned long, false) // NOLINT(*-runtime-int)
+SERIAL_RPC_SIG_INT_(unsigned long long, false) // NOLINT(*-runtime-int)
+
+#undef SERIAL_RPC_SIG_INT_
+
+/// Writes a comma-separated token list: `SigList<A,B,C>::append(out, true)`
+/// writes `A,B,C` (no brackets/parens -- the caller wraps those). Shared by
+/// the parameter-list part of write_signature() below and, on the STL
+/// backend, by std::pair/std::tuple's `[T,U,...]` token.
+template <class... Ts>
+struct SigList; // primary: intentionally undefined (only the two below match)
+
+template <>
+struct SigList<> {
+  static void append(SigBuf &, bool) {}
+};
+
+template <class Head, class... Tail>
+struct SigList<Head, Tail...> {
+  static void append(SigBuf &out, bool first) {
+    if (!first) append_comma_(out);
+    SigToken<Head>::append(out);
+    SigList<Tail...>::append(out, false);
+  }
+};
+
+/// Writes a typed handler's full signature, e.g. `(u8,bool)->nil`. `R` and
+/// `ArgTs...` are exactly what `TypedThunk`/`MemberThunk`/`LambdaBinder`
+/// (below) deduced the handler's callable from, so this always matches
+/// what the thunk actually decodes/invokes/packs.
+template <class R, class... ArgTs>
+void write_signature(SigBuf &out) {
+  append_lparen_(out);
+  SigList<ArgTs...>::append(out, true);
+  append_rparen_(out);
+  append_arrow_(out);
+  SigToken<R>::append(out);
+}
+
+/// A raw handler's (bind_raw) fixed signature: its argument shape isn't
+/// known at compile time, so rpc.list reports it as PLAN.md specifies.
+inline void write_raw_signature(SigBuf &out) {
+  append_lparen_(out);
+  append_ellipsis_(out);
+  append_rparen_(out);
+  append_arrow_(out);
+  append_any_(out);
+}
+
+/// The type of the one extra function pointer each handler table entry
+/// carries (see this section's opening comment). Always a plain function
+/// pointer -- never std::function, even on the STL backend -- since it
+/// never needs to capture anything: it's selected purely by R/ArgTs... at
+/// bind() time.
+using SigFn = void (*)(SigBuf &);
+
+} // namespace sig
+
+// ===========================================================================
 // Decode<R, ArgTs...> / Invoke<R>: apply a decoded argument list to a
 // callable without std::tuple (unavailable on the fixed backend).
 // ===========================================================================
@@ -415,6 +725,9 @@ struct LambdaBinder<Fn, R (C::*)(ArgTs...) const> {
   static HandlerFnT make(Fn f) {
     return HandlerFnT(TypedThunk<Fn, R, ArgTs...>(f));
   }
+  /// The rpc.list signature generator matching this lambda's deduced
+  /// R(ArgTs...) -- see the "Signature tokens" section above.
+  static sig::SigFn sig() { return &sig::write_signature<R, ArgTs...>; }
 };
 
 template <class Fn, class C, class R, class... ArgTs>
@@ -423,6 +736,7 @@ struct LambdaBinder<Fn, R (C::*)(ArgTs...)> {
   static HandlerFnT make(Fn f) {
     return HandlerFnT(TypedThunk<Fn, R, ArgTs...>(f));
   }
+  static sig::SigFn sig() { return &sig::write_signature<R, ArgTs...>; }
 };
 
 #if SERIAL_RPC_USE_STL
@@ -554,6 +868,58 @@ struct ValuePacker<std::tuple<Ts...>> {
   }
 };
 
+// ---------------------------------------------------------------------------
+// rpc.list signature tokens for the STL-only extra types above (see the
+// "Signature tokens" section further up): `str` for std::string (same
+// token as const char*, per PLAN.md), `[T]` for std::vector<T>, `[T;N]`
+// for std::array<T,N>, and `[T,U,...]` for std::pair/std::tuple.
+namespace sig {
+
+template <>
+struct SigToken<std::string> {
+  static void append(SigBuf &out) { append_str_(out); }
+};
+
+template <class T>
+struct SigToken<std::vector<T>> {
+  static void append(SigBuf &out) {
+    append_lbracket_(out);
+    SigToken<T>::append(out);
+    append_rbracket_(out);
+  }
+};
+
+template <class T, size_t N>
+struct SigToken<std::array<T, N>> {
+  static void append(SigBuf &out) {
+    append_lbracket_(out);
+    SigToken<T>::append(out);
+    append_semicolon_(out);
+    out.append_uint(N);
+    append_rbracket_(out);
+  }
+};
+
+template <class A, class B>
+struct SigToken<std::pair<A, B>> {
+  static void append(SigBuf &out) {
+    append_lbracket_(out);
+    SigList<A, B>::append(out, true);
+    append_rbracket_(out);
+  }
+};
+
+template <class... Ts>
+struct SigToken<std::tuple<Ts...>> {
+  static void append(SigBuf &out) {
+    append_lbracket_(out);
+    SigList<Ts...>::append(out, true);
+    append_rbracket_(out);
+  }
+};
+
+} // namespace sig
+
 #endif // SERIAL_RPC_USE_STL
 
 /// Empty class solely for computing the default InplaceFn Capacity (see
@@ -598,19 +964,26 @@ enum {
 ///  - `kStrScratchSize` (32): NUL-terminates `const char*` arguments (see
 ///    `detail::ArgDecoder<const char*>`).
 ///  - `SERIAL_RPC_LOG_BUF_SIZE` (64, override-able): `log`'s line buffer.
-///  - handler table: `MaxHandlers * (sizeof(const char*) + sizeof(InplaceFn<Capacity>))`,
-///    about 12 bytes/handler with the default Capacity, per docs/PLAN.md.
-/// Measured total with every default left as-is: ~720 bytes for the
-/// `Server` object itself. That is *not* the whole sketch's RAM, though:
+///  - handler table: `MaxHandlers * (sizeof(const char*) + sizeof(InplaceFn<Capacity>) +
+///    sizeof(detail::sig::SigFn))`, about 14 bytes/handler with the default Capacity (12
+///    bytes before rpc.list started returning `[name, signature]` pairs, per docs/PLAN.md
+///    component 7 -- the extra 2 bytes/handler is exactly one function pointer, the
+///    compile-time-generated signature writer; no signature *string* is ever stored per
+///    handler, see the "Signature tokens" section above `detail::Decode`).
+/// Measured total with every default left as-is: 737 bytes for the
+/// `Server` object itself (up from ~720 before rpc.list's signature
+/// support). That is *not* the whole sketch's RAM, though:
 /// `HardwareSerial` adds its own ~155-byte RX/TX buffers, `Print`'s vtable
 /// (shared with every other `Print`-derived object) adds ~30, and the
 /// "ready" line literal (uncounted here, since it's a local, not a member)
 /// adds ~22 -- enough that a sketch using every default can land just over
 /// the 1 KB target on a 2 KB Uno. `examples/Blink` instantiates
-/// `SerialRPC<6, 96>` instead (it only needs 5 handlers and small
-/// payloads), which measures ~600 bytes for the `Server` object and ~1016
-/// bytes total, comfortably under 1 KB; a sketch with more headroom (or a
-/// 32-bit board) can just use the `SerialRPC<>` default.
+/// `SerialRPC<5, 96>` instead (it needs exactly 5 handlers and small
+/// payloads -- trimmed from 6 to exactly 5 when rpc.list's signature
+/// support added its 2 bytes/handler, to stay under budget), which
+/// measures ~599 bytes for the `Server` object and ~1014 bytes total,
+/// comfortably under 1 KB; a sketch with more headroom (or a 32-bit
+/// board) can just use the `SerialRPC<>` default.
 template <class StreamT, size_t MaxHandlers = 8, size_t BufSize = 128, size_t Capacity = kDefaultServerCapacity>
 class Server {
 public:
@@ -663,7 +1036,8 @@ public:
   /// lambdas directly too).
   template <class R, class... ArgTs>
   void bind(const char *name, R (*fn)(ArgTs...)) {
-    add_handler_(name, HandlerFn(detail::TypedThunk<R (*)(ArgTs...), R, ArgTs...>(fn)));
+    add_handler_(name, HandlerFn(detail::TypedThunk<R (*)(ArgTs...), R, ArgTs...>(fn)),
+                 &detail::sig::write_signature<R, ArgTs...>);
   }
 
   /// Binds any lambda (capture-less or capturing). `R`/`ArgTs...` are
@@ -676,7 +1050,8 @@ public:
   /// the binding (see docs/PLAN.md, component 3).
   template <class Fn>
   void bind(const char *name, Fn f) {
-    add_handler_(name, detail::LambdaBinder<Fn, decltype(&Fn::operator())>::template make<HandlerFn>(f));
+    using Binder = detail::LambdaBinder<Fn, decltype(&Fn::operator())>;
+    add_handler_(name, Binder::template make<HandlerFn>(f), Binder::sig());
   }
 
   /// Binds a non-const member function: `rpc.bind("stop", motor, &Motor::stop);`.
@@ -684,7 +1059,7 @@ public:
   void bind(const char *name, Obj &obj, R (Obj::*mfn)(ArgTs...)) {
     using MemberPtr = R (Obj::*)(ArgTs...);
     detail::MemberThunk<Obj, MemberPtr, R, ArgTs...> thunk = {&obj, mfn};
-    add_handler_(name, HandlerFn(thunk));
+    add_handler_(name, HandlerFn(thunk), &detail::sig::write_signature<R, ArgTs...>);
   }
 
   /// Binds a const member function.
@@ -692,7 +1067,7 @@ public:
   void bind(const char *name, Obj &obj, R (Obj::*mfn)(ArgTs...) const) {
     using MemberPtr = R (Obj::*)(ArgTs...) const;
     detail::MemberThunk<Obj, MemberPtr, R, ArgTs...> thunk = {&obj, mfn};
-    add_handler_(name, HandlerFn(thunk));
+    add_handler_(name, HandlerFn(thunk), &detail::sig::write_signature<R, ArgTs...>);
   }
 
   /// Escape hatch for variable or complex arguments: `fn` is called with
@@ -703,7 +1078,7 @@ public:
   /// `reply.writer()`.
   template <class Fn>
   void bind_raw(const char *name, Fn f) {
-    add_handler_(name, HandlerFn(f));
+    add_handler_(name, HandlerFn(f), &detail::sig::write_raw_signature);
   }
 
   /// Map-style syntax: `rpc["set_led"] = [&](uint8_t pin, bool on){ ... };`
@@ -863,6 +1238,14 @@ public:
   static const size_t kResultScratch = 64;
   static const size_t kLineMax = 64;
   static const size_t kFrameMax = cobs_max_encoded_size(BufSize + 2);
+  /// Stack-only scratch used by `pack_method_list_` (rpc.list) to assemble
+  /// one handler's signature string at a time (see the "Signature tokens"
+  /// section of this file); never stored per handler, so it doesn't affect
+  /// Server's own RAM footprint. 48 bytes comfortably covers every
+  /// signature shape this library generates (a handful of scalar/`[T]`
+  /// tokens); it's also within `kResultScratch`, which bounds the whole
+  /// `[name, signature]` pair anyway.
+  static const size_t kSigBufSize = 48;
 
 private:
   friend class Log;
@@ -872,12 +1255,14 @@ private:
   struct Entry {
     std::string name;
     HandlerFn fn;
+    detail::sig::SigFn write_sig = nullptr;
   };
 #else
   using HandlerFn = detail::InplaceFn<Capacity>;
   struct Entry {
     const char *name = nullptr;
     HandlerFn fn;
+    detail::sig::SigFn write_sig = nullptr;
   };
 #endif
 
@@ -984,8 +1369,27 @@ private:
       return true;
     }
     if (method_is_(ptr, len, "rpc.list")) {
-      reply.writer().pack_array(handler_count_());
-      pack_method_names_(reply.writer());
+      // Returns `[[name, signature], ...]` (docs/PLAN.md, component 7's
+      // "Device-side support" bullet). An optional integer `start` arg
+      // pages through the table from that index -- for a sketch with
+      // enough bound methods, the full array can overflow kResultScratch/
+      // BufSize, in which case send_response_ falls back to the usual
+      // "response too large" error; paging past that is how a client
+      // works around it (unused by the host today, but simple to keep
+      // available -- see PLAN.md).
+      uint32_t start = 0;
+      if (args.size() >= 1) {
+        args.reader().read(start);
+        if (args.reader().error()) {
+          reply.error("bad args");
+          return true;
+        }
+      }
+      const size_t total = handler_count_();
+      const uint32_t total_u32 = static_cast<uint32_t>(total);
+      const size_t start_idx = (start < total_u32) ? static_cast<size_t>(start) : total;
+      reply.writer().pack_array(total - start_idx);
+      pack_method_list_(reply.writer(), start_idx);
       return true;
     }
     if (method_is_(ptr, len, "rpc.attach")) {
@@ -1018,8 +1422,19 @@ private:
   }
 
 #if SERIAL_RPC_USE_STL
-  void pack_method_names_(msgpack::Writer &w) {
-    for (const Entry &e : _handlers) w.pack_str(e.name.data(), e.name.size());
+  /// Writes `[name, signature]` for every handler from `start_idx` on,
+  /// building each signature into a small buffer shared across the whole
+  /// call (see kSigBufSize's comment) rather than storing one per handler.
+  void pack_method_list_(msgpack::Writer &w, size_t start_idx) {
+    char sig_buf[kSigBufSize];
+    for (size_t i = start_idx; i < _handlers.size(); ++i) {
+      const Entry &e = _handlers[i];
+      w.pack_array(2);
+      w.pack_str(e.name.data(), e.name.size());
+      detail::sig::SigBuf sig(sig_buf, sizeof(sig_buf));
+      e.write_sig(sig);
+      w.pack_str(sig.c_str(), sig.len());
+    }
   }
   bool dispatch_user_(const char *ptr, size_t len, Args &args, Reply &reply) {
     for (Entry &e : _handlers) {
@@ -1030,23 +1445,35 @@ private:
     }
     return false;
   }
-  void add_handler_(const char *name, HandlerFn fn) {
+  void add_handler_(const char *name, HandlerFn fn, detail::sig::SigFn write_sig) {
     const std::string name_str(name);
     for (Entry &e : _handlers) {
       if (e.name == name_str) {
         e.fn = fn;
+        e.write_sig = write_sig;
         return;
       }
     }
     Entry e;
     e.name = name_str;
     e.fn = fn;
+    e.write_sig = write_sig;
     _handlers.push_back(e);
   }
   size_t handler_count_() const { return _handlers.size(); }
 #else
-  void pack_method_names_(msgpack::Writer &w) {
-    for (size_t i = 0; i < _handler_count; ++i) w.pack(_handlers[i].name);
+  /// Writes `[name, signature]` for every handler from `start_idx` on; see
+  /// the STL-backend overload above for the general design.
+  void pack_method_list_(msgpack::Writer &w, size_t start_idx) {
+    char sig_buf[kSigBufSize];
+    for (size_t i = start_idx; i < _handler_count; ++i) {
+      const Entry &e = _handlers[i];
+      w.pack_array(2);
+      w.pack(e.name);
+      detail::sig::SigBuf sig(sig_buf, sizeof(sig_buf));
+      e.write_sig(sig);
+      w.pack_str(sig.c_str(), sig.len());
+    }
   }
   bool dispatch_user_(const char *ptr, size_t len, Args &args, Reply &reply) {
     for (size_t i = 0; i < _handler_count; ++i) {
@@ -1057,16 +1484,18 @@ private:
     }
     return false;
   }
-  void add_handler_(const char *name, HandlerFn fn) {
+  void add_handler_(const char *name, HandlerFn fn, detail::sig::SigFn write_sig) {
     for (size_t i = 0; i < _handler_count; ++i) {
       if (method_is_(name, strlen(name), _handlers[i].name)) {
         _handlers[i].fn = fn;
+        _handlers[i].write_sig = write_sig;
         return;
       }
     }
     if (_handler_count < MaxHandlers) {
       _handlers[_handler_count].name = name;
       _handlers[_handler_count].fn = fn;
+      _handlers[_handler_count].write_sig = write_sig;
       ++_handler_count;
     } else {
       ++_response_overflow_errors; // handler table full; documented as a silent drop plus this counter

@@ -48,12 +48,16 @@ const char *get_status() { return g_led_on ? "led=on" : "led=off"; }
 
 } // namespace
 
-// 6 handlers (this sketch binds 5) and a 96-byte frame/payload budget (this
-// sketch's requests and replies are all a handful of bytes) comfortably fit
-// every method below while keeping the Uno's RAM budget under 1 KB; see the
-// budget breakdown on serial_rpc::Server's class comment. Bigger sketches
-// with more methods or larger payloads can just use the SerialRPC<> default.
-serial_rpc::SerialRPC<6, 96> rpc(Serial);
+// Exactly 5 handlers (this sketch binds 5) and a 96-byte frame/payload
+// budget (this sketch's requests and replies are all a handful of bytes)
+// comfortably fit every method below while keeping the Uno's RAM budget
+// under 1 KB; see the budget breakdown on serial_rpc::Server's class
+// comment. This used to have one spare handler slot, but rpc.list's
+// signature support (docs/PLAN.md component 7) adds one function pointer
+// per slot -- table size is now trimmed to exactly what's bound so the
+// Uno stays under budget. Bigger sketches with more methods, more
+// headroom, or larger payloads can just use the SerialRPC<> default.
+serial_rpc::SerialRPC<5, 96> rpc(Serial);
 
 uint32_t last_log_ms = 0;
 
