@@ -25,3 +25,20 @@ target_link_libraries(serial_rpc_tests_stl PRIVATE serial_rpc doctest::doctest)
 target_compile_options(serial_rpc_tests_stl PRIVATE -Wall -Wextra -Wpedantic)
 target_compile_definitions(serial_rpc_tests_stl PRIVATE SERIAL_RPC_USE_STL=1)
 doctest_discover_tests(serial_rpc_tests_stl TEST_PREFIX "stl/")
+
+# serial_rpc.hpp (host-side RPC client, docs/PLAN.md component 5) + its
+# LoopbackPort loopback tests, built twice for the same reason as above: the
+# LoopbackPort in test_rpc.cpp wraps a real serial_rpc::Server<MockStream>,
+# so building against both device-side storage backends exercises the whole
+# host<->device round trip on each.
+add_executable(serial_rpc_tests_host_fixed test_rpc.cpp)
+target_link_libraries(serial_rpc_tests_host_fixed PRIVATE serial_rpc doctest::doctest)
+target_compile_options(serial_rpc_tests_host_fixed PRIVATE -Wall -Wextra -Wpedantic)
+target_compile_definitions(serial_rpc_tests_host_fixed PRIVATE SERIAL_RPC_USE_STL=0)
+doctest_discover_tests(serial_rpc_tests_host_fixed TEST_PREFIX "host-fixed/")
+
+add_executable(serial_rpc_tests_host_stl test_rpc.cpp)
+target_link_libraries(serial_rpc_tests_host_stl PRIVATE serial_rpc doctest::doctest)
+target_compile_options(serial_rpc_tests_host_stl PRIVATE -Wall -Wextra -Wpedantic)
+target_compile_definitions(serial_rpc_tests_host_stl PRIVATE SERIAL_RPC_USE_STL=1)
+doctest_discover_tests(serial_rpc_tests_host_stl TEST_PREFIX "host-stl/")
