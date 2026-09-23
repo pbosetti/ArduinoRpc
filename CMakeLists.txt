@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.24)
+cmake_minimum_required(VERSION 3.25)
 project(arduino_rpc CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -41,6 +41,7 @@ FetchContent_Declare(
   doctest
   GIT_REPOSITORY https://github.com/doctest/doctest.git
   GIT_TAG v2.4.11
+  SYSTEM # third-party headers: exempt from our warnings
 )
 # doctest 2.4.11's own CMakeLists.txt declares cmake_minimum_required(3.0),
 # which current CMake (>= 4.0) refuses to configure at all. Tell FetchContent
@@ -60,16 +61,19 @@ FetchContent_Declare(
   replxx
   GIT_REPOSITORY https://github.com/AmokHuginnsson/replxx.git
   GIT_TAG release-0.0.4 # latest tagged release; also HEAD of the (unmaintained since 2021) repo
+  SYSTEM
 )
 FetchContent_Declare(
   fmt
   GIT_REPOSITORY https://github.com/fmtlib/fmt.git
   GIT_TAG 11.2.0
+  SYSTEM # third-party headers: exempt from our warnings
 )
 FetchContent_Declare(
   cxxopts
   GIT_REPOSITORY https://github.com/jarro2783/cxxopts.git
   GIT_TAG v3.3.1
+  SYSTEM # third-party headers: exempt from our warnings
 )
 FetchContent_Declare(
   nlohmann_json
@@ -78,6 +82,7 @@ FetchContent_Declare(
   # than the full git repository with its docs/tests/tooling.
   URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
   URL_HASH SHA256=d6c65aca6b1ed68e7a182f4757257b107ae403032760ed6ef121c9d55e81757d
+  SYSTEM
 )
 
 set(REPLXX_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
