@@ -105,11 +105,18 @@ inline std::string format_output_line(Kind kind, const std::string &msg, bool co
 /// used only to build the history file path.
 inline std::string home_dir() {
 #if defined(_WIN32)
-  const char *h = std::getenv("USERPROFILE");
+  // _dupenv_s instead of getenv, which MSVC flags as unsafe (C4996).
+  char *h = nullptr;
+  size_t len = 0;
+  if (_dupenv_s(&h, &len, "USERPROFILE") != 0 || h == nullptr)
+    return ".";
+  std::string dir(h);
+  std::free(h);
+  return dir;
 #else
   const char *h = std::getenv("HOME");
-#endif
   return h ? std::string(h) : std::string(".");
+#endif
 }
 
 inline std::string history_file_path() {

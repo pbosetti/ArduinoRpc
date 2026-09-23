@@ -26,9 +26,9 @@ jobs:
             werror: "ON"
           - name: Windows (MSVC)
             os: windows-latest
-            werror: "OFF"
+            werror: "ON"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install CMake and Ninja
         uses: lukka/get-cmake@latest
@@ -55,7 +55,7 @@ jobs:
     name: Arduino lint & compile
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Lint library
         uses: arduino/arduino-lint-action@v2
