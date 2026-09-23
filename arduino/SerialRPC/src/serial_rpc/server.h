@@ -583,7 +583,9 @@ enum {
 /// size_t)` and `size_t write(uint8_t)` (Arduino's `Stream`/`Print` already
 /// provide exactly this; so does the `MockStream` used by the host tests).
 ///
-/// RAM budget for the fixed backend, with the defaults (`BufSize=128`):
+/// RAM budget for the fixed backend, with the defaults (`BufSize=128`,
+/// `MaxHandlers=8`) -- this is the `Server` object's own footprint, measured
+/// via `avr-nm` on an actual `arduino:avr:uno` build:
 ///  - `_demux`: `cobs_max_encoded_size(BufSize+2)` (~131) for the incoming
 ///    frame + `kLineMax` (64) for the text-line buffer.
 ///  - `_payload_buf`: `BufSize` (128), the scratch used to build every
@@ -598,9 +600,17 @@ enum {
 ///  - `SERIAL_RPC_LOG_BUF_SIZE` (64, override-able): `log`'s line buffer.
 ///  - handler table: `MaxHandlers * (sizeof(const char*) + sizeof(InplaceFn<Capacity>))`,
 ///    about 12 bytes/handler with the default Capacity, per docs/PLAN.md.
-/// Total: roughly 750-800 bytes with every default left as-is, comfortably
-/// under the 1 KB target for the Uno `Blink` example even after
-/// `HardwareSerial`'s own ~128-byte RX/TX buffers.
+/// Measured total with every default left as-is: ~720 bytes for the
+/// `Server` object itself. That is *not* the whole sketch's RAM, though:
+/// `HardwareSerial` adds its own ~155-byte RX/TX buffers, `Print`'s vtable
+/// (shared with every other `Print`-derived object) adds ~30, and the
+/// "ready" line literal (uncounted here, since it's a local, not a member)
+/// adds ~22 -- enough that a sketch using every default can land just over
+/// the 1 KB target on a 2 KB Uno. `examples/Blink` instantiates
+/// `SerialRPC<6, 96>` instead (it only needs 5 handlers and small
+/// payloads), which measures ~600 bytes for the `Server` object and ~1016
+/// bytes total, comfortably under 1 KB; a sketch with more headroom (or a
+/// 32-bit board) can just use the `SerialRPC<>` default.
 template <class StreamT, size_t MaxHandlers = 8, size_t BufSize = 128, size_t Capacity = kDefaultServerCapacity>
 class Server {
 public:
