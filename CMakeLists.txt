@@ -38,3 +38,16 @@ unset(CMAKE_POLICY_VERSION_MINIMUM)
 
 enable_testing()
 add_subdirectory(tests)
+
+# -----------------------------------------------------------------------------
+# Host serialport.hpp smoke test (PLAN.md component 4). Links two translation
+# units that both include the header, so that a missing `inline` on some
+# out-of-class definition shows up as a link-time multiple-definition error
+# instead of silently working by luck of the build order.
+# -----------------------------------------------------------------------------
+add_executable(serialport_smoke
+  host/examples/serialport_smoke.cpp
+  host/examples/serialport_smoke_tu2.cpp
+)
+target_link_libraries(serialport_smoke PRIVATE serial_rpc)
+target_compile_options(serialport_smoke PRIVATE -Wall -Wextra -Wpedantic)
