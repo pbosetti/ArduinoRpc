@@ -88,9 +88,10 @@ There is a single source of truth for the codec and the framing: the host includ
   void set_led(uint8_t pin, bool on) { digitalWrite(pin, on); }
   rpc.bind("set_led", set_led);                                  // free function
   rpc.bind("set_period", [](uint32_t ms) { period = ms; });      // capture-less (globals)
-  rpc.bind("speed", [&motor](int s) { motor.set_speed(s); });    // capturing lambda
+  rpc.bind("speed", [](int s) { motor.set_speed(s); });          // globals: no capture needed
   rpc.bind("stop", motor, &Motor::stop);                         // object + member fn
-  // inside a class: rpc.bind("reset", [this]() { reset(); });
+  // inside a class: rpc.bind("reset", [this]() { reset(); });   // capturing lambda
+  // (a capture list may only name locals or this, never a global like [&motor])
   ```
   - A C++11 variadic template deduces `R(Args...)` from function pointers, member-function pointers, and lambdas (via `decltype(&F::operator())`). It generates a thunk that checks the argument count, decodes each argument with `Reader`, invokes the callable, and packs the return value (`void` becomes `nil`).
   - Generic lambdas (`auto` parameters) are not supported, because their argument types cannot be deduced.
