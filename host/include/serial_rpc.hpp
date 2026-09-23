@@ -788,7 +788,7 @@ public:
       const auto attempt = std::min(remaining, std::chrono::milliseconds(100));
       pump_bytes_(attempt);
       if (_pending_response_ready) {
-        _last_rtt = std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - start);
+        _last_rtt = std::chrono::duration_cast<std::chrono::microseconds>(clock::now() - start);
         if (_pending_response_is_error) {
           Value err = std::move(_pending_response_value);
           throw RemoteError(std::string(method), std::move(err));
@@ -933,7 +933,7 @@ public:
   /// Calls `rpc.ping`, returning the device's protocol version.
   int ping() { return call<int>("rpc.ping"); }
 
-  std::chrono::milliseconds last_rtt() const noexcept { return _last_rtt; }
+  std::chrono::microseconds last_rtt() const noexcept { return _last_rtt; }
   const Stats &stats() const noexcept { return _stats; }
 
   Port &port() noexcept { return _port; }
@@ -1145,7 +1145,7 @@ private:
   Value _pending_response_value;
 
   bool _attached = false;
-  std::chrono::milliseconds _last_rtt{0};
+  std::chrono::microseconds _last_rtt{0};
   Stats _stats;
 
   std::function<void(int, std::string_view)> _on_log;
