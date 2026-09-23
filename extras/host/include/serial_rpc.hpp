@@ -1,12 +1,13 @@
+// SPDX-License-Identifier: Apache-2.0
 /// \file serial_rpc.hpp
 /// \brief Host-side, header-only MsgPack-RPC client (see docs/PLAN.md,
 ///   component 5): a dynamically-typed `Value`, and the `RPC<Port>` class
 ///   that drives a request/response/notification exchange with a device
-///   running `serial_rpc::Server` (arduino/SerialRPC/src/serial_rpc/server.h)
-///   over anything shaped like `SerialPort`.
+///   running `serial_rpc::Server` (src/serial_rpc/server.h, at the
+///   repository root) over anything shaped like `SerialPort`.
 ///
 /// C++20, header-only. Includes the shared wire-level headers straight from
-/// the Arduino library folder (single source of truth for the codec and the
+/// the Arduino library's src/ (single source of truth for the codec and the
 /// framing, per docs/PLAN.md's "Layout" section) plus `serialport.hpp`.
 #pragma once
 
@@ -267,7 +268,7 @@ public:
   /// Direct access to a held map's raw, ordered entries -- including any
   /// non-string or duplicate keys -- which `as<std::map<std::string,T>>()`
   /// can't represent (it requires string keys and collapses duplicates).
-  /// Throws TypeError if this Value doesn't hold a map. host/tools/rpc_repl's
+  /// Throws TypeError if this Value doesn't hold a map. extras/host/tools/rpc_repl's
   /// JSON conversion (docs/PLAN.md component 7) is the motivating caller:
   /// it needs the raw keys, string or not, to render them into JSON.
   const Map &map() const {

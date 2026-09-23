@@ -1,0 +1,50 @@
+#######################################
+# Syntax Coloring Map For SerialRPC
+#######################################
+
+#######################################
+# Datatypes (KEYWORD1)
+#######################################
+
+SerialRPC	KEYWORD1
+Server	KEYWORD1
+Log	KEYWORD1
+Args	KEYWORD1
+Reply	KEYWORD1
+
+#######################################
+# Methods and Functions (KEYWORD2)
+#######################################
+
+begin	KEYWORD2
+poll	KEYWORD2
+attached	KEYWORD2
+bind	KEYWORD2
+bind_raw	KEYWORD2
+notify	KEYWORD2
+on_text	KEYWORD2
+on_attach	KEYWORD2
+on_detach	KEYWORD2
+log_at	KEYWORD2
+level	KEYWORD2
+set_clock	KEYWORD2
+handler_count	KEYWORD2
+unknown_method_errors	KEYWORD2
+handler_errors	KEYWORD2
+malformed_errors	KEYWORD2
+response_overflow_errors	KEYWORD2
+crc_errors	KEYWORD2
+cobs_errors	KEYWORD2
+frame_overflow_errors	KEYWORD2
+size	KEYWORD2
+reader	KEYWORD2
+scratch_alloc	KEYWORD2
+writer	KEYWORD2
+error	KEYWORD2
+error_message	KEYWORD2
+failed	KEYWORD2
+
+#######################################
+# Constants (LITERAL1)
+#######################################
+

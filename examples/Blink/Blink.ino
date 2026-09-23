@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // Blink.ino - SerialRPC example (docs/PLAN.md, "Blink.ino + rpc_cli").
 //
 // A blinking LED whose period, on/off state and tick count are reachable

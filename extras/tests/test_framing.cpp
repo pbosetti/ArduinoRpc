@@ -1,4 +1,5 @@
-// Tests for arduino/SerialRPC/src/serial_rpc/framing.h
+// SPDX-License-Identifier: Apache-2.0
+// Tests for src/serial_rpc/framing.h
 //
 // Covers: the CRC16/CCITT-FALSE check value, COBS encode/decode vectors
 // taken from the Wikipedia "Consistent Overhead Byte Stuffing" article's

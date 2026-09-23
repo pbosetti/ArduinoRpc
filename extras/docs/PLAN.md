@@ -42,22 +42,28 @@ Decisions already made:
 - **Rule for users, documented:** don't `Serial.write()` raw binary containing `0x00` on the same port.
 
 ## Layout
+The repository root IS the Arduino library (1.5 format, arduino-cli /
+Library Manager installable via `--library .` or by cloning/symlinking the
+repo into a sketchbook's `libraries/` folder). Everything that isn't part
+of the Arduino library lives under `extras/`, which Arduino's tooling
+ignores.
 ```
-arduino/SerialRPC/                 # Arduino library (arduino-cli installable via --library)
-  library.properties
-  src/SerialRPC.h                  # umbrella include
-  src/serial_rpc/msgpack_lite.h    # SHARED codec: Writer (to buffer) + Reader (cursor over buffer), C++11
-  src/serial_rpc/framing.h         # SHARED COBS encode/decode + CRC16, incremental frame receiver
-  src/serial_rpc/server.h          # device dispatcher, templated on Stream-like type
-  examples/Blink/Blink.ino         # set_led, set_period, get_status, logging
-host/include/
+library.properties
+src/SerialRPC.h                    # umbrella include
+src/serial_rpc/msgpack_lite.h      # SHARED codec: Writer (to buffer) + Reader (cursor over buffer), C++11
+src/serial_rpc/framing.h           # SHARED COBS encode/decode + CRC16, incremental frame receiver
+src/serial_rpc/server.h            # device dispatcher, templated on Stream-like type
+examples/Blink/Blink.ino           # set_led, set_period, get_status, logging
+keywords.txt                       # Arduino IDE syntax highlighting
+extras/host/include/
   serialport.hpp                   # merged header-only SerialPort (from src/)
   serial_rpc.hpp                   # header-only RPC client; includes the shared headers above
-host/tools/rpc_repl/               # replxx REPL + one-shot CLI: `rpc_repl -p /dev/cu.usbmodem1 set_led 13 true`
-tests/                             # doctest via FetchContent
-CMakeLists.txt                     # host lib (INTERFACE), examples, tests; include path to arduino/SerialRPC/src
+extras/host/tools/rpc_repl/        # replxx REPL + one-shot CLI: `rpc_repl -p /dev/cu.usbmodem1 set_led 13 true`
+extras/tests/                      # doctest via FetchContent
+extras/docs/PLAN.md                # this file
+CMakeLists.txt                     # host lib (INTERFACE), examples, tests; include path to src (root CMakeLists.txt, kept at the repo root so `cmake -Bbuild` still works from there; it points into extras/ for everything host-side)
 ```
-There is a single source of truth for the codec and the framing: the host includes them straight from the Arduino library folder.
+There is a single source of truth for the codec and the framing: the host includes them straight from the Arduino library's `src/`.
 
 ## Components
 
@@ -195,7 +201,7 @@ There is a single source of truth for the codec and the framing: the host includ
   - `rpc_repl -p PORT --monitor` only shows traffic.
   - `-p` is optional when `SerialPort::available_ports()` finds exactly one likely board (`usbmodem`/`usbserial`/`ttyACM`/`ttyUSB`/`COM`).
 - **Device-side support:** `rpc.list` returns `[name, signature]` pairs, for example `["set_led","(u8,bool)->nil"]`. The typed thunks generate the signature strings at compile time. Raw handlers report `"(...)"`. On AVR the strings live in PROGMEM where practical.
-- **Files:** `host/tools/rpc_repl/` holds `main.cpp` (cxxopts), `repl.hpp`, `io_worker.hpp` and `json_value.hpp` (conversion between JSON and `Value`). There is a CMake target `rpc_repl`. The JSON conversion and token parsing are unit-tested (`tests/test_repl_parse.cpp`, target `rpc_repl_tests`); the terminal parts are tested manually.
+- **Files:** `extras/host/tools/rpc_repl/` holds `main.cpp` (cxxopts), `repl.hpp`, `io_worker.hpp` and `json_value.hpp` (conversion between JSON and `Value`). There is a CMake target `rpc_repl`. The JSON conversion and token parsing are unit-tested (`extras/tests/test_repl_parse.cpp`, target `rpc_repl_tests`); the terminal parts are tested manually.
 - **Deviation from the plan as originally written:** `json_value.hpp`'s map conversion needs a map `Value`'s raw, ordered entries -- including any non-string keys -- which component 5's `Value` had no way to expose (`as<std::map<std::string,T>>()` only covers string-keyed maps). Rather than re-decoding a re-encoded buffer by hand to work around that, `Value` gained one small additive accessor, `const Map &map() const` (throws TypeError if not a map), documented at its call site in `host/include/serial_rpc.hpp`. Nothing else about component 5's API changed.
 - **Also note:** `RPC::last_rtt()` was changed after this component was written to return `std::chrono::microseconds` instead of milliseconds (USB round trips are commonly sub-millisecond); `rpc_repl` formats it with one decimal place of millisecond precision, e.g. `(0.6 ms)`.
 
@@ -204,7 +210,7 @@ There is a single source of truth for the codec and the framing: the host includ
   - `serial_rpc` (INTERFACE)
   - `rpc_repl`
   - `serial_rpc_tests`
-- **Arduino:** `arduino-cli compile -b arduino:avr:uno --library arduino/SerialRPC arduino/SerialRPC/examples/Blink`. Also compile once for a 32-bit core, e.g. `arduino:samd:mkr1000` or `esp32:esp32:esp32`, if that core is installed.
+- **Arduino:** `arduino-cli compile -b arduino:avr:uno --library . examples/Blink` (run from the repo root, now that the root itself is the library). Also compile once for a 32-bit core, e.g. `arduino:samd:mkr1000` or `esp32:esp32:esp32`, if that core is installed.
 
 ## Implementation order
 1. `msgpack_lite.h` + tests (round-trip every type, numeric coercion, overflow and truncated input).

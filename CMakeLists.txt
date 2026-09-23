@@ -14,8 +14,8 @@ endif()
 # the host build and, via arduino-cli --library, the Arduino build.
 add_library(serial_rpc INTERFACE)
 target_include_directories(serial_rpc INTERFACE
-  ${CMAKE_CURRENT_SOURCE_DIR}/arduino/SerialRPC/src
-  ${CMAKE_CURRENT_SOURCE_DIR}/host/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/extras/host/include
 )
 target_compile_features(serial_rpc INTERFACE cxx_std_20)
 
@@ -34,10 +34,10 @@ FetchContent_MakeAvailable(doctest)
 unset(CMAKE_POLICY_VERSION_MINIMUM)
 
 # -----------------------------------------------------------------------------
-# Dependencies for host/tools/rpc_repl (docs/PLAN.md component 7) only. None
-# of these are linked into `serial_rpc`, `serialport_smoke`, or the
-# serial_rpc_tests* targets below -- only `rpc_repl` and `rpc_repl_tests` use
-# them, so the header-only libraries stay dependency-free.
+# Dependencies for extras/host/tools/rpc_repl (docs/PLAN.md component 7)
+# only. None of these are linked into `serial_rpc`, `serialport_smoke`, or
+# the serial_rpc_tests* targets below -- only `rpc_repl` and `rpc_repl_tests`
+# use them, so the header-only libraries stay dependency-free.
 # -----------------------------------------------------------------------------
 FetchContent_Declare(
   replxx
@@ -81,7 +81,7 @@ set(BUILD_SHARED_LIBS ${_rpc_repl_saved_bsl})
 unset(_rpc_repl_saved_bsl)
 
 enable_testing()
-add_subdirectory(tests)
+add_subdirectory(extras/tests)
 
 # -----------------------------------------------------------------------------
 # rpc_repl: the interactive REPL / one-shot CLI (docs/PLAN.md component 7).
@@ -89,7 +89,7 @@ add_subdirectory(tests)
 # `inline` or an in-class member definition), so main.cpp is the only
 # translation unit.
 # -----------------------------------------------------------------------------
-add_executable(rpc_repl host/tools/rpc_repl/main.cpp)
+add_executable(rpc_repl extras/host/tools/rpc_repl/main.cpp)
 target_link_libraries(rpc_repl PRIVATE serial_rpc replxx::replxx fmt::fmt cxxopts::cxxopts nlohmann_json::nlohmann_json)
 target_compile_options(rpc_repl PRIVATE -Wall -Wextra -Wpedantic)
 
@@ -100,8 +100,8 @@ target_compile_options(rpc_repl PRIVATE -Wall -Wextra -Wpedantic)
 # instead of silently working by luck of the build order.
 # -----------------------------------------------------------------------------
 add_executable(serialport_smoke
-  host/examples/serialport_smoke.cpp
-  host/examples/serialport_smoke_tu2.cpp
+  extras/host/examples/serialport_smoke.cpp
+  extras/host/examples/serialport_smoke_tu2.cpp
 )
 target_link_libraries(serialport_smoke PRIVATE serial_rpc)
 target_compile_options(serialport_smoke PRIVATE -Wall -Wextra -Wpedantic)

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /// \file config.h
 /// \brief Compile-time configuration for the device-side RPC server: which
 ///   storage backend it uses (`server.h`, component 3b) and a couple of

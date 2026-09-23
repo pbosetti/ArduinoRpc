@@ -1,4 +1,5 @@
-/* Smoke test for the header-only host/include/serialport.hpp.
+// SPDX-License-Identifier: Apache-2.0
+/* Smoke test for the header-only extras/host/include/serialport.hpp.
  *
  * This program, together with serialport_smoke_tu2.cpp, includes the header
  * from two separate translation units and links them into one executable:

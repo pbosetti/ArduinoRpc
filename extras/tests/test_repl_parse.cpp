@@ -1,4 +1,5 @@
-// Tests for host/tools/rpc_repl/json_value.hpp (docs/PLAN.md, component 7):
+// SPDX-License-Identifier: Apache-2.0
+// Tests for extras/host/tools/rpc_repl/json_value.hpp (docs/PLAN.md, component 7):
 // the command-line tokenizer / parse_args(), and the serial_rpc::Value <->
 // nlohmann::json conversion. Links nlohmann_json only (not replxx, not
 // fmt/cxxopts): this exercises exactly the two things docs/PLAN.md calls

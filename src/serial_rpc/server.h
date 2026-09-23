@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /// \file server.h
 /// \brief Device-side MsgPack-RPC dispatcher (see docs/PLAN.md, components 3
 ///   and 3b): a fixed handler table with `InplaceFn` callables on AVR / when

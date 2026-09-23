@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /// \file json_value.hpp
 /// \brief `serial_rpc::Value <-> nlohmann::json` conversion, plus the REPL's
 ///   command-line tokenizer (docs/PLAN.md component 7): `parse_args()` turns

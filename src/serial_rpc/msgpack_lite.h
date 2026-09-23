@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /// \file msgpack_lite.h
 /// \brief Minimal, dependency-free MessagePack codec shared by the Arduino
 ///   device library and the host RPC client.

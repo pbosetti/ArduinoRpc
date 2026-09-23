@@ -1,6 +1,7 @@
-// Tests for host/include/serial_rpc.hpp (docs/PLAN.md, component 5).
+// SPDX-License-Identifier: Apache-2.0
+// Tests for extras/host/include/serial_rpc.hpp (docs/PLAN.md, component 5).
 //
-// Compiled twice (see tests/CMakeLists.txt), once against each device-side
+// Compiled twice (see extras/tests/CMakeLists.txt), once against each device-side
 // storage backend from server.h (docs/PLAN.md 3b): SERIAL_RPC_USE_STL=0
 // (target serial_rpc_tests_host_fixed) and =1 (serial_rpc_tests_host_stl).
 // Every handler bound on the device side below only uses argument/return

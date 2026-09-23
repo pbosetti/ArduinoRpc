@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /// \file main.cpp
 /// \brief `rpc_repl` entry point (docs/PLAN.md component 7): CLI parsing,
 ///   port auto-detection, and the three run modes -- one-shot (a method

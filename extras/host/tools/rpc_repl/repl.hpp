@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /// \file repl.hpp
 /// \brief The interactive REPL (docs/PLAN.md component 7): a `replxx`-backed
 ///   line editor that turns typed lines into `IoWorker` commands and renders

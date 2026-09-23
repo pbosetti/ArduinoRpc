@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /* Second translation unit that also includes serialport.hpp and calls a
  * SerialPort member, so that linking this file together with
  * serialport_smoke.cpp proves the header has no ODR / multiple-definition

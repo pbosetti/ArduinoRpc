@@ -1,6 +1,7 @@
-// Tests for arduino/SerialRPC/src/serial_rpc/server.h
+// SPDX-License-Identifier: Apache-2.0
+// Tests for src/serial_rpc/server.h
 //
-// Compiled twice (see tests/CMakeLists.txt): once with -DSERIAL_RPC_USE_STL=0
+// Compiled twice (see extras/tests/CMakeLists.txt): once with -DSERIAL_RPC_USE_STL=0
 // (target serial_rpc_tests_fixed) and once with -DSERIAL_RPC_USE_STL=1
 // (target serial_rpc_tests_stl), so both storage backends run every shared
 // test below; a few STL-only cases (std::string/vector/array/pair/tuple

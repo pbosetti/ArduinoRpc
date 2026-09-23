@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /// \file framing.h
 /// \brief COBS framing, CRC16 and the text/frame demultiplexer shared by
 ///   the Arduino device library and the host RPC client.

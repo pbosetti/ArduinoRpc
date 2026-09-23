@@ -3,18 +3,25 @@
 Typed request/response and notification RPC between a host PC and an
 Arduino, over a single serial line shared with plain text -- using a small,
 dependency-free MsgPack codec of its own. Full design in
-[`docs/PLAN.md`](docs/PLAN.md).
+[`extras/docs/PLAN.md`](extras/docs/PLAN.md).
 
-- **Arduino side** (`arduino/SerialRPC/`): a C++11, no-heap library. Bind a
+The repository root **is** the `SerialRPC` Arduino library (1.5 format,
+installable via the Arduino Library Manager or `arduino-cli --library`).
+Everything that isn't part of the Arduino library -- the host build, tools,
+and tests -- lives under [`extras/`](extras/), which Arduino's tooling
+ignores.
+
+- **Arduino side** (`src/`): a C++11, no-heap library. Bind a
   free function, a lambda, or a member function to a name; `rpc.poll()` in
   `loop()` dispatches incoming calls. Plain `Serial.print()` and RPC frames
   coexist on the same line -- a `Demux` tells them apart byte by byte, so
   the Arduino Serial Monitor looks like an ordinary sketch until a host
   attaches.
-- **Host side** (`host/include/`): header-only C++20 -- `serialport.hpp` (a
-  portable serial port) and `serial_rpc.hpp` (the `RPC<Port>` client).
-- **`rpc_repl`** (`host/tools/rpc_repl/`): an interactive REPL and one-shot
-  CLI for talking to a device from a terminal or a script.
+- **Host side** (`extras/host/include/`): header-only C++20 --
+  `serialport.hpp` (a portable serial port) and `serial_rpc.hpp` (the
+  `RPC<Port>` client).
+- **`rpc_repl`** (`extras/host/tools/rpc_repl/`): an interactive REPL and
+  one-shot CLI for talking to a device from a terminal or a script.
 
 ## Build
 
@@ -32,14 +39,20 @@ executables `ctest` runs.
 
 ## Arduino quick start: Blink
 
-Install the library (from the repo root, with `arduino-cli`):
+The repo root is the library itself, so `--library .` (or `--library
+/path/to/arduino_rpc`) is all `arduino-cli` needs -- no separate install
+step. Run from the repo root:
 
 ```sh
-arduino-cli compile -b arduino:avr:uno --library arduino/SerialRPC arduino/SerialRPC/examples/Blink
-arduino-cli upload -b arduino:avr:uno -p <port> --library arduino/SerialRPC arduino/SerialRPC/examples/Blink
+arduino-cli compile -b arduino:avr:uno --library . examples/Blink
+arduino-cli upload -b arduino:avr:uno -p <port> --library . examples/Blink
 ```
 
-The sketch ([`arduino/SerialRPC/examples/Blink/Blink.ino`](arduino/SerialRPC/examples/Blink/Blink.ino)),
+Alternatively, install it the way the Arduino IDE / Library Manager does:
+copy or symlink the repo into your sketchbook's `libraries/SerialRPC`
+directory, and `--library` is no longer needed at all.
+
+The sketch ([`examples/Blink/Blink.ino`](examples/Blink/Blink.ino)),
 in outline:
 
 ```cpp
@@ -89,7 +102,7 @@ rpc.disconnect();                     // sends rpc.detach; also runs in the dest
 `Value` is the dynamically-typed decoded form (nil/bool/int/uint/double/
 string/bin/array/map); `call<int>(...)` converts it, `call(...)` returns it
 as-is. See the doc comments in
-[`host/include/serial_rpc.hpp`](host/include/serial_rpc.hpp) for the full
+[`extras/host/include/serial_rpc.hpp`](extras/host/include/serial_rpc.hpp) for the full
 API, error types, and threading notes.
 
 ## `rpc_repl`
@@ -145,3 +158,10 @@ notifications, `[txt]` raw text (dimmed), `→` outgoing calls, `←` results
 background thread owns the port and keeps polling and reconnecting (every
 500 ms while the port is unplugged or unresponsive) while the REPL stays
 responsive.
+
+## License
+
+Apache License 2.0 -- see [`LICENSE`](LICENSE). Each of this project's own
+source files carries an `SPDX-License-Identifier: Apache-2.0` line;
+third-party dependencies pulled in by the build (doctest, fmt, cxxopts,
+nlohmann/json, replxx) keep their own licenses.

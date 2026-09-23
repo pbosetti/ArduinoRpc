@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /// \file io_worker.hpp
 /// \brief `IoWorker`: owns the `SerialPort` + `RPC<SerialPort>` pair on its
 ///   own thread (docs/PLAN.md component 7). The REPL thread never touches

@@ -1,4 +1,5 @@
-// Tests for arduino/SerialRPC/src/serial_rpc/msgpack_lite.h
+// SPDX-License-Identifier: Apache-2.0
+// Tests for src/serial_rpc/msgpack_lite.h
 //
 // Covers: round-trips for every object type and every integer-size
 // boundary (fixint/8/16/32/64, both signs), str8/16/32 and bin8/16/32
