@@ -105,3 +105,19 @@ add_executable(serialport_smoke
 )
 target_link_libraries(serialport_smoke PRIVATE serial_rpc)
 target_compile_options(serialport_smoke PRIVATE -Wall -Wextra -Wpedantic)
+
+# -----------------------------------------------------------------------------
+# arduino_install (optional, not part of `all`): copies the Arduino library to
+# <sketchbook>/libraries/SerialRPC and the Blink example to
+# <sketchbook>/SerialRPC_Blink. The sketchbook comes from
+# `arduino-cli config get directories.user` unless ARDUINO_USER_DIR is set,
+# e.g. `cmake -Bbuild -DARDUINO_USER_DIR=~/Arduino`.
+# -----------------------------------------------------------------------------
+set(ARDUINO_USER_DIR "" CACHE PATH
+    "Arduino sketchbook for arduino_install (empty: ask arduino-cli)")
+add_custom_target(arduino_install
+  COMMAND ${CMAKE_COMMAND} -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+          -DARDUINO_USER_DIR=${ARDUINO_USER_DIR}
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/extras/cmake/arduino_install.cmake
+  COMMENT "Installing the SerialRPC Arduino library and Blink sketch"
+  VERBATIM)

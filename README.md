@@ -48,9 +48,19 @@ arduino-cli compile -b arduino:avr:uno --library . examples/Blink
 arduino-cli upload -b arduino:avr:uno -p <port> --library . examples/Blink
 ```
 
-Alternatively, install it the way the Arduino IDE / Library Manager does:
-copy or symlink the repo into your sketchbook's `libraries/SerialRPC`
-directory, and `--library` is no longer needed at all.
+Alternatively, install it into your sketchbook the way the Arduino IDE /
+Library Manager does, after which `--library` is no longer needed:
+
+```sh
+cmake -Bbuild && cmake --build build --target arduino_install
+```
+
+This copies the library to `<sketchbook>/libraries/SerialRPC` (replacing a
+previous SerialRPC install; its examples show up under File > Examples >
+SerialRPC) and the Blink example to `<sketchbook>/SerialRPC_Blink` (only if
+that sketch doesn't exist yet, so your edits are kept). The sketchbook is
+the one `arduino-cli config get directories.user` reports; override it with
+`cmake -Bbuild -DARDUINO_USER_DIR=/path/to/sketchbook`.
 
 The sketch ([`examples/Blink/Blink.ino`](examples/Blink/Blink.ino)),
 in outline:
