@@ -731,43 +731,88 @@ TEST_CASE("rpc.list: start pages through the handler table") {
   CHECK(n == 0);
 }
 
-TEST_CASE("rpc.list: overflowing the result buffer still yields response too large, and start "
-          "can page around it") {
+TEST_CASE("rpc.list: a single entry too large to ever fit yields response too large") {
   MockStream s;
-  TestServer rpc(s);
+  // BufSize=32 -> kResultScratch = 32-8 = 24 bytes: too small for this one
+  // entry (a 20-char name plus a 14-char signature needs 37), but still
+  // comfortably big enough to carry the "response too large" error
+  // message itself (24 bytes: array+type+msgid+the 19-char string+nil) --
+  // a smaller BufSize would make *that* fallback overflow too and the
+  // test would be exercising a degenerate BufSize instead of this method.
+  using TinyServer = serial_rpc::Server<MockStream, 4, 32>;
+  TinyServer rpc(s);
   rpc.begin();
-  // Two 20-char names with a 15-char signature each: one entry is well
-  // under kResultScratch (64 bytes), but two together are not.
   rpc.bind("long_method_name_aaa", [](uint8_t, bool) {});
-  rpc.bind("long_method_name_bbb", [](uint8_t, bool) {});
 
   s.tx.clear();
   send_request(s, 1, "rpc.list");
   rpc.poll();
-  auto frames = decode_frames(s.tx);
+
+  const auto frames = decode_frames(s.tx);
   REQUIRE(frames.size() == 1);
-  auto pr = parse_response(frames[0]);
+  const auto pr = parse_response(frames[0]);
   REQUIRE(pr.well_formed);
   CHECK(pr.is_error);
   CHECK(pr.error_msg == "response too large");
   CHECK(rpc.response_overflow_errors() >= 1);
+}
 
-  // start=1 drops the response to a single entry, which fits.
-  s.tx.clear();
-  send_request(s, 2, "rpc.list", 1);
-  rpc.poll();
-  frames = decode_frames(s.tx);
-  REQUIRE(frames.size() == 1);
-  pr = parse_response(frames[0]);
-  REQUIRE(pr.well_formed);
-  CHECK_FALSE(pr.is_error);
-  Reader rr(frames[0].data() + pr.result_pos, frames[0].size() - pr.result_pos);
-  size_t n;
-  rr.read_array(n);
-  REQUIRE(n == 1);
-  const auto e = read_list_entry(rr);
-  CHECK(e.first == "long_method_name_bbb");
-  CHECK(e.second == "(u8,bool)->nil");
+TEST_CASE("rpc.list: a Blink-like table too large for one reply is reassembled by paging") {
+  MockStream s;
+  // Mirrors examples/Blink/Blink.ino's exact handler set and its own
+  // BufSize (96): that many [name, signature] pairs don't fit in one
+  // reply at that BufSize (kResultScratch = 96-8 = 88 bytes, but the 5
+  // entries together need ~109) -- docs/PLAN.md component 7's follow-up
+  // asks for exactly this to be paged automatically rather than erroring,
+  // and for a client loop that pages with `start` to be able to
+  // reassemble the whole list. This is that client loop, end to end.
+  using BlinkLikeServer = serial_rpc::Server<MockStream, 8, 96>;
+  BlinkLikeServer rpc(s);
+  rpc.begin();
+  rpc.bind("set_led", [](uint8_t, bool) {});
+  rpc.bind("set_period", [](uint32_t) {});
+  rpc.bind("reset_counter", []() {});
+  rpc.bind("get_count", []() -> int32_t { return 0; });
+  rpc.bind("get_status", []() -> const char * { return "led=off"; });
+
+  std::vector<std::pair<std::string, std::string>> got;
+  uint32_t start = 0;
+  uint32_t msgid = 1;
+  int replies = 0;
+  for (;;) {
+    s.tx.clear();
+    send_request(s, msgid, "rpc.list", start);
+    rpc.poll();
+    ++replies;
+    REQUIRE(replies < 10); // guards against ever looping forever on a bug
+
+    const auto frames = decode_frames(s.tx);
+    REQUIRE(frames.size() == 1);
+    const auto pr = parse_response(frames[0]);
+    REQUIRE(pr.well_formed);
+    REQUIRE_FALSE(pr.is_error);
+    Reader rr(frames[0].data() + pr.result_pos, frames[0].size() - pr.result_pos);
+    size_t n;
+    rr.read_array(n);
+    if (n == 0) break; // start >= count: paging is done
+    REQUIRE(n >= 1);    // "always at least one entry if start < count"
+    for (size_t i = 0; i < n; ++i) got.push_back(read_list_entry(rr));
+    start += static_cast<uint32_t>(n);
+    ++msgid;
+  }
+
+  CHECK(replies >= 2); // the whole point: it must NOT have fit in one reply
+  REQUIRE(got.size() == 5);
+  CHECK(got[0].first == "set_led");
+  CHECK(got[0].second == "(u8,bool)->nil");
+  CHECK(got[1].first == "set_period");
+  CHECK(got[1].second == "(u32)->nil");
+  CHECK(got[2].first == "reset_counter");
+  CHECK(got[2].second == "()->nil");
+  CHECK(got[3].first == "get_count");
+  CHECK(got[3].second == "()->i32");
+  CHECK(got[4].first == "get_status");
+  CHECK(got[4].second == "()->str");
 }
 
 TEST_CASE("rpc.attach replies [version, n_methods] and attaches") {

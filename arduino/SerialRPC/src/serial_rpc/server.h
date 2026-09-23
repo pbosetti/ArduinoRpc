@@ -152,7 +152,7 @@ private:
 /// writes nothing is treated as returning nil.
 class Reply {
 public:
-  explicit Reply(msgpack::Writer &writer) : _writer(writer), _error(nullptr) {}
+  explicit Reply(msgpack::Writer &writer) : _writer(writer), _error(nullptr), _raw_override(false), _raw_len(0) {}
 
   msgpack::Writer &writer() { return _writer; }
   const msgpack::Writer &writer() const { return _writer; }
@@ -163,9 +163,40 @@ public:
   const char *error_message() const { return _error; }
   bool failed() const { return _error != nullptr; }
 
+  /// Advanced escape hatch, for `Server`'s own built-ins only (currently
+  /// just `rpc.list`, see `Server::pack_rpc_list_result_`): `writer()`'s
+  /// public API is append-only, with no way to go back and patch bytes
+  /// already written -- which `rpc.list` needs, to reserve a fixed-width
+  /// array header up front and fill in the true element count only once
+  /// it's known (the header's own encoded width depends on that count).
+  /// `raw_buf()` hands back a *mutable* pointer to the same buffer
+  /// `writer()` wraps (legitimate, not a `const_cast` escape: the
+  /// underlying object -- `Server::handle_frame_`'s `result_buf` -- was
+  /// always a plain, non-const array; only `Writer::data()`'s return type
+  /// is `const`), so a caller that has independently verified how many
+  /// bytes it wrote (`Server::kResultScratch` bounds the capacity) can
+  /// write there directly. `set_raw_result()` then tells `writer()`'s
+  /// normal consumer (`Server::send_response_`) how many bytes of that
+  /// buffer are the real result, bypassing `writer()`'s own (unused, in
+  /// this path) size tracking.
+  uint8_t *raw_buf() { return const_cast<uint8_t *>(_writer.data()); }
+  void set_raw_result(size_t len) {
+    _raw_override = true;
+    _raw_len = len;
+  }
+  /// The result's length in bytes: `_raw_len` if `set_raw_result()` was
+  /// called, otherwise `writer().size()` as usual.
+  size_t result_size() const { return _raw_override ? _raw_len : _writer.size(); }
+  /// The result's bytes; always `writer().data()` (`set_raw_result()`
+  /// only overrides the *length* read back from it, never the pointer,
+  /// since `raw_buf()` writes into that same buffer).
+  const uint8_t *result_data() const { return _writer.data(); }
+
 private:
   msgpack::Writer &_writer;
   const char *_error;
+  bool _raw_override;
+  size_t _raw_len;
 };
 
 namespace detail {
@@ -330,7 +361,7 @@ struct ArgDecoder<const char *> {
 // (TypedThunk / MemberThunk / LambdaBinder, above and below). Calling it
 // writes the signature, token by token, into a small buffer that lives on
 // the stack only for the duration of one rpc.list dispatch (`SigBuf`,
-// reused across every handler in the loop -- see `Server::pack_method_list_`).
+// reused across every handler in the loop -- see `Server::pack_rpc_list_result_`).
 // So the permanent RAM cost of this whole feature is exactly one function
 // pointer per handler slot, as PLAN.md's "zero RAM per handler beyond one
 // function pointer" asks for.
@@ -1235,16 +1266,40 @@ public:
   }
 
   static const size_t kStrScratchSize = 32;
-  static const size_t kResultScratch = 64;
+  /// Upper bound on `send_response_`'s own `[1, type, msgid, nil-error]`
+  /// header (a fixarray byte, a fixint type byte, up to 5 bytes for a
+  /// uint32 msgid, one nil byte) -- both the size of `send_response_`'s
+  /// `hdr_buf` and, below, the amount of `_payload_buf`/`BufSize` that
+  /// `kResultScratch` must leave free for that header.
+  static const size_t kResponseHeaderMax = 8;
+  /// A handler's single return value is packed here, separately from the
+  /// response header (`send_response_`'s `hdr_buf`, above), since the
+  /// header's own width isn't known until the msgid is decoded; the two
+  /// are then spliced together. This used to be a fixed 64 regardless of
+  /// `BufSize` -- capping every handler's result well below what a large
+  /// `BufSize` could actually carry, and (see `pack_rpc_list_result_`)
+  /// forcing `rpc.list` into an overly small budget for no reason. It's
+  /// sized from `BufSize` instead: `result_buf` (`handle_frame_`, where
+  /// this is actually used) is a plain function-local array, never a
+  /// `Server` member, so growing it costs *zero* permanent RAM -- only a
+  /// deeper call stack during one dispatch, and AVR has ample stack
+  /// headroom below the `Server` object's own (`.data`/`.bss`) footprint
+  /// (see this class's RAM-budget comment above). The `- kResponseHeaderMax`
+  /// guarantees a fitting result plus its header can never exceed
+  /// `_payload_buf[BufSize]`, so `send_response_`'s final copy essentially
+  /// never has to reject a result that got this far. The `> kResponseHeaderMax
+  /// ? ... : 1` guards only the degenerate case of a `BufSize` too small to
+  /// hold a header at all (not a realistic configuration; every handler's
+  /// result would immediately overflow, correctly).
+  static const size_t kResultScratch = (BufSize > kResponseHeaderMax) ? (BufSize - kResponseHeaderMax) : 1;
   static const size_t kLineMax = 64;
   static const size_t kFrameMax = cobs_max_encoded_size(BufSize + 2);
-  /// Stack-only scratch used by `pack_method_list_` (rpc.list) to assemble
-  /// one handler's signature string at a time (see the "Signature tokens"
-  /// section of this file); never stored per handler, so it doesn't affect
-  /// Server's own RAM footprint. 48 bytes comfortably covers every
-  /// signature shape this library generates (a handful of scalar/`[T]`
-  /// tokens); it's also within `kResultScratch`, which bounds the whole
-  /// `[name, signature]` pair anyway.
+  /// Stack-only scratch used by `pack_rpc_list_result_` (rpc.list) to
+  /// assemble one handler's signature string at a time (see the
+  /// "Signature tokens" section of this file); never stored per handler,
+  /// so it doesn't affect Server's own RAM footprint. 48 bytes comfortably
+  /// covers every signature shape this library generates (a handful of
+  /// scalar/`[T]` tokens).
   static const size_t kSigBufSize = 48;
 
 private:
@@ -1370,13 +1425,13 @@ private:
     }
     if (method_is_(ptr, len, "rpc.list")) {
       // Returns `[[name, signature], ...]` (docs/PLAN.md, component 7's
-      // "Device-side support" bullet). An optional integer `start` arg
-      // pages through the table from that index -- for a sketch with
-      // enough bound methods, the full array can overflow kResultScratch/
-      // BufSize, in which case send_response_ falls back to the usual
-      // "response too large" error; paging past that is how a client
-      // works around it (unused by the host today, but simple to keep
-      // available -- see PLAN.md).
+      // "Device-side support" bullet), automatically paged: as many
+      // consecutive entries starting at the optional integer `start` arg
+      // as fit in one reply, always at least one if `start` names a real
+      // entry (an unpageable single huge entry is the only case that
+      // yields "response too large" -- see pack_rpc_list_result_). A
+      // client pages by calling again with `start += <entries received>`
+      // until it gets an empty array (which also covers `start >= count`).
       uint32_t start = 0;
       if (args.size() >= 1) {
         args.reader().read(start);
@@ -1385,11 +1440,7 @@ private:
           return true;
         }
       }
-      const size_t total = handler_count_();
-      const uint32_t total_u32 = static_cast<uint32_t>(total);
-      const size_t start_idx = (start < total_u32) ? static_cast<size_t>(start) : total;
-      reply.writer().pack_array(total - start_idx);
-      pack_method_list_(reply.writer(), start_idx);
+      pack_rpc_list_result_(reply, start);
       return true;
     }
     if (method_is_(ptr, len, "rpc.attach")) {
@@ -1422,19 +1473,12 @@ private:
   }
 
 #if SERIAL_RPC_USE_STL
-  /// Writes `[name, signature]` for every handler from `start_idx` on,
-  /// building each signature into a small buffer shared across the whole
-  /// call (see kSigBufSize's comment) rather than storing one per handler.
-  void pack_method_list_(msgpack::Writer &w, size_t start_idx) {
-    char sig_buf[kSigBufSize];
-    for (size_t i = start_idx; i < _handlers.size(); ++i) {
-      const Entry &e = _handlers[i];
-      w.pack_array(2);
-      w.pack_str(e.name.data(), e.name.size());
-      detail::sig::SigBuf sig(sig_buf, sizeof(sig_buf));
-      e.write_sig(sig);
-      w.pack_str(sig.c_str(), sig.len());
-    }
+  /// Handler `i`'s bound name, for `pack_rpc_list_result_` below -- the
+  /// one place its logic differs by backend (`std::string` vs `const
+  /// char*` storage).
+  void handler_name_(size_t i, const char *&ptr, size_t &len) const {
+    ptr = _handlers[i].name.data();
+    len = _handlers[i].name.size();
   }
   bool dispatch_user_(const char *ptr, size_t len, Args &args, Reply &reply) {
     for (Entry &e : _handlers) {
@@ -1462,18 +1506,10 @@ private:
   }
   size_t handler_count_() const { return _handlers.size(); }
 #else
-  /// Writes `[name, signature]` for every handler from `start_idx` on; see
-  /// the STL-backend overload above for the general design.
-  void pack_method_list_(msgpack::Writer &w, size_t start_idx) {
-    char sig_buf[kSigBufSize];
-    for (size_t i = start_idx; i < _handler_count; ++i) {
-      const Entry &e = _handlers[i];
-      w.pack_array(2);
-      w.pack(e.name);
-      detail::sig::SigBuf sig(sig_buf, sizeof(sig_buf));
-      e.write_sig(sig);
-      w.pack_str(sig.c_str(), sig.len());
-    }
+  /// Handler `i`'s bound name; see the STL-backend overload above.
+  void handler_name_(size_t i, const char *&ptr, size_t &len) const {
+    ptr = _handlers[i].name;
+    len = strlen(_handlers[i].name);
   }
   bool dispatch_user_(const char *ptr, size_t len, Args &args, Reply &reply) {
     for (size_t i = 0; i < _handler_count; ++i) {
@@ -1504,6 +1540,105 @@ private:
   size_t handler_count_() const { return _handler_count; }
 #endif
 
+  // --- rpc.list: automatic paging -----------------------------------------
+
+  /// msgpack header width for a string of `len` bytes, mirroring exactly
+  /// how `msgpack::Writer::pack_str` picks fixstr/str8/str16 (str32 is
+  /// never reached: `len` here is always a method name or a generated
+  /// signature, both far under 256 bytes in any realistic sketch, and
+  /// `kResultScratch` -- this whole response's budget -- caps out long
+  /// before 65536 either way). Used to compute one entry's exact encoded
+  /// size *before* writing it, so `pack_rpc_list_result_` never has to
+  /// write speculatively and roll back.
+  static size_t str_header_len_(size_t len) {
+    if (len < 32) return 1;
+    if (len < 256) return 2;
+    return 3;
+  }
+  /// Exact encoded size of one `[name, signature]` pair: a 1-byte fixarray
+  /// header (always -- it's exactly 2 elements) plus each string's own
+  /// header and bytes.
+  static size_t list_entry_size_(size_t name_len, size_t sig_len) {
+    return 1 + str_header_len_(name_len) + name_len + str_header_len_(sig_len) + sig_len;
+  }
+
+  /// Builds rpc.list's result: as many consecutive `[name, signature]`
+  /// pairs starting at `start` as fit in `kResultScratch` bytes, always at
+  /// least one if `start` names a real handler -- a single entry too big
+  /// to ever fit alone is the only case that yields "response too large".
+  /// `start >= handler_count_()` yields an empty array, not an error; a
+  /// client pages by calling again with `start += <entries received>`
+  /// until it sees that empty array (docs/PLAN.md component 7's
+  /// "Device-side support" bullet).
+  ///
+  /// The result array's own header width depends on the element count,
+  /// which isn't known until entries have actually been packed (that's
+  /// the whole point of "as many as fit") -- but `msgpack::Writer`'s
+  /// public API is append-only, with no way to go back and widen or
+  /// narrow an already-written header. So a fixed-width 3-byte array16
+  /// header (`0xdc` + a big-endian uint16 count) is reserved up front,
+  /// directly in `reply`'s raw buffer (`Reply::raw_buf()`), and patched
+  /// with the true count once it's known; array16 covers 0..65535
+  /// entries, far more than any plausible `MaxHandlers`. Every entry
+  /// after that header is still written through a normal
+  /// `msgpack::Writer` (over the remaining span of the same buffer) --
+  /// but only once `list_entry_size_` has already confirmed it fits, so
+  /// that Writer's own pack_*() calls can never overflow or leave a
+  /// partially-written entry behind (no rollback needed anywhere).
+  void pack_rpc_list_result_(Reply &reply, uint32_t start) {
+    const size_t total = handler_count_();
+    const uint32_t total_u32 = static_cast<uint32_t>(total);
+    const size_t start_idx = (start < total_u32) ? static_cast<size_t>(start) : total;
+
+    if (start_idx >= total) {
+      reply.writer().pack_array(0); // start >= count: empty array, not an error
+      return;
+    }
+
+    static const size_t kArrayHeaderLen = 3;
+    if (kResultScratch < kArrayHeaderLen) {
+      // Degenerate BufSize, too small to even hold the header: every
+      // rpc.list call is unanswerable, same as any other handler whose
+      // smallest possible result can't fit.
+      reply.error("response too large");
+      ++_response_overflow_errors;
+      return;
+    }
+
+    uint8_t *const raw = reply.raw_buf();
+    char sig_buf[kSigBufSize];
+    size_t written = kArrayHeaderLen; // header reserved up front, patched below
+    size_t count = 0;
+    for (size_t i = start_idx; i < total; ++i) {
+      const char *name_ptr;
+      size_t name_len;
+      handler_name_(i, name_ptr, name_len);
+      detail::sig::SigBuf sig(sig_buf, sizeof(sig_buf));
+      _handlers[i].write_sig(sig);
+
+      const size_t entry_len = list_entry_size_(name_len, sig.len());
+      if (written + entry_len > kResultScratch) {
+        if (count == 0) {
+          reply.error("response too large"); // not even the first entry fits
+          ++_response_overflow_errors;
+          return;
+        }
+        break; // what's already committed stands; the client pages for the rest
+      }
+      msgpack::Writer ew(raw + written, kResultScratch - written);
+      ew.pack_array(2);
+      ew.pack_str(name_ptr, name_len);
+      ew.pack_str(sig.c_str(), sig.len());
+      written += ew.size(); // == entry_len: pack_str picks headers the same way list_entry_size_ predicted
+      ++count;
+    }
+
+    raw[0] = 0xdc; // msgpack array16
+    raw[1] = static_cast<uint8_t>((count >> 8) & 0xffu);
+    raw[2] = static_cast<uint8_t>(count & 0xffu);
+    reply.set_raw_result(written);
+  }
+
   // --- response / notification framing --------------------------------
 
   void pack_notify_args_(msgpack::Writer &) {}
@@ -1519,11 +1654,12 @@ private:
   /// On failure, the whole array (including the, possibly long, user- or
   /// built-in-supplied error string) is packed directly into `_payload_buf`
   /// in one pass. On success, the header (array/type/msgid/nil-error-slot)
-  /// is small and *bounded* (at most 8 bytes: a fixarray byte, a fixint
-  /// type byte, up to 5 bytes for a uint32 msgid, one nil byte), so it's
-  /// built first with a tiny local Writer; the handler's already-packed
-  /// result bytes (from `reply.writer()`, a *separate* small Writer -- see
-  /// the class comment on `Reply`) are then copied in raw, since msgpack
+  /// is small and *bounded* by `kResponseHeaderMax` (a fixarray byte, a
+  /// fixint type byte, up to 5 bytes for a uint32 msgid, one nil byte), so
+  /// it's built first with a tiny local Writer; the handler's
+  /// already-packed result bytes (`reply.result_data()`/`result_size()` --
+  /// ordinarily `reply.writer()`'s own, but see `Reply::raw_buf()` for the
+  /// one exception, `rpc.list`) are then copied in raw, since msgpack
   /// array elements are just concatenated encodings -- no need to decode
   /// and re-pack the result to splice it into place.
   void send_response_(uint32_t msgid, Reply &reply) {
@@ -1540,7 +1676,7 @@ private:
       overflowed = w.overflow();
       total = w.size();
     } else {
-      uint8_t hdr_buf[8];
+      uint8_t hdr_buf[kResponseHeaderMax];
       msgpack::Writer hw(hdr_buf, sizeof(hdr_buf));
       hw.pack_array(4);
       hw.pack(1);
@@ -1550,7 +1686,7 @@ private:
       if (!overflowed) {
         memcpy(_payload_buf, hw.data(), hw.size());
         total = hw.size();
-        const size_t result_len = reply.writer().size();
+        const size_t result_len = reply.result_size();
         if (result_len == 0) {
           msgpack::Writer nil_w(_payload_buf + total, sizeof(_payload_buf) - total);
           nil_w.pack_nil();
@@ -1560,7 +1696,7 @@ private:
             total += nil_w.size();
           }
         } else if (total + result_len <= sizeof(_payload_buf)) {
-          memcpy(_payload_buf + total, reply.writer().data(), result_len);
+          memcpy(_payload_buf + total, reply.result_data(), result_len);
           total += result_len;
         } else {
           overflowed = true;
