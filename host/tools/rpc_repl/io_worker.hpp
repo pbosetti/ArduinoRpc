@@ -10,6 +10,7 @@
 
 #include <fmt/format.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <deque>
@@ -223,10 +224,20 @@ private:
     }
   }
 
-  void refresh_methods_() {
+  /// Re-reads the device's method table (paged `rpc.list`) into the
+  /// completion sink; with `print` set, also shows it as a `[sys]` table.
+  void refresh_methods_(bool print = false) {
     if (!_rpc) return;
     try {
       std::vector<serial_rpc::MethodInfo> methods = _rpc->list();
+      if (print) {
+        size_t width = 0;
+        for (const auto &m : methods) width = std::max(width, m.name.size());
+        emit_(Kind::Sys, fmt::format("{} method(s)", methods.size()));
+        for (const auto &m : methods)
+          emit_(Kind::Sys, fmt::format("  {:<{}}  {}", m.name, width,
+                                       m.signature));
+      }
       if (_methods_sink) _methods_sink(methods);
     } catch (const std::exception &e) {
       emit_(Kind::Sys, fmt::format("rpc.list failed: {}", e.what()));
@@ -358,7 +369,7 @@ private:
       emit_(Kind::Error, "not connected: no open port");
       return;
     }
-    refresh_methods_();
+    refresh_methods_(/*print=*/true);
   }
 
   /// Plain `.reset` pulses DTR (works on boards with a DTR-wired auto-reset

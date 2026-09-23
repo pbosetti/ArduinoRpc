@@ -156,6 +156,9 @@ public:
     if (kind == Kind::Text && !_filters.txt.load()) return;
     const std::string line = format_output_line(kind, msg, _opts.color);
     _rx.print("%s\n", line.c_str());
+    // Attach/detach/reconnect always announce themselves as [sys] lines:
+    // refresh the prompt then, so its attached marker never lags a command.
+    if (kind == Kind::Sys) _rx.set_prompt(make_prompt_());
   }
 
   /// Called from the I/O thread whenever the method list is refreshed
