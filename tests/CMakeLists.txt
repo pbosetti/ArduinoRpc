@@ -42,3 +42,16 @@ target_link_libraries(serial_rpc_tests_host_stl PRIVATE serial_rpc doctest::doct
 target_compile_options(serial_rpc_tests_host_stl PRIVATE -Wall -Wextra -Wpedantic)
 target_compile_definitions(serial_rpc_tests_host_stl PRIVATE SERIAL_RPC_USE_STL=1)
 doctest_discover_tests(serial_rpc_tests_host_stl TEST_PREFIX "host-stl/")
+
+# -----------------------------------------------------------------------------
+# rpc_repl_tests: unit tests for host/tools/rpc_repl/json_value.hpp
+# (docs/PLAN.md component 7) -- the Value<->JSON conversion and the REPL's
+# command-line tokenizer/parse_args(). Links nlohmann_json only, not replxx
+# or fmt/cxxopts: json_value.hpp (the header under test) doesn't need them,
+# and per docs/PLAN.md "the terminal parts are tested manually".
+# -----------------------------------------------------------------------------
+add_executable(rpc_repl_tests test_repl_parse.cpp)
+target_include_directories(rpc_repl_tests PRIVATE ${CMAKE_SOURCE_DIR}/host/tools/rpc_repl)
+target_link_libraries(rpc_repl_tests PRIVATE serial_rpc doctest::doctest nlohmann_json::nlohmann_json)
+target_compile_options(rpc_repl_tests PRIVATE -Wall -Wextra -Wpedantic)
+doctest_discover_tests(rpc_repl_tests)

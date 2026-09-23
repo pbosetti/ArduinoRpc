@@ -33,11 +33,65 @@ set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 FetchContent_MakeAvailable(doctest)
 unset(CMAKE_POLICY_VERSION_MINIMUM)
 
-# fmt and cxxopts are added via FetchContent in a later step, once
-# host/serial_rpc.hpp and host/examples/rpc_cli.cpp exist.
+# -----------------------------------------------------------------------------
+# Dependencies for host/tools/rpc_repl (docs/PLAN.md component 7) only. None
+# of these are linked into `serial_rpc`, `serialport_smoke`, or the
+# serial_rpc_tests* targets below -- only `rpc_repl` and `rpc_repl_tests` use
+# them, so the header-only libraries stay dependency-free.
+# -----------------------------------------------------------------------------
+FetchContent_Declare(
+  replxx
+  GIT_REPOSITORY https://github.com/AmokHuginnsson/replxx.git
+  GIT_TAG release-0.0.4 # latest tagged release; also HEAD of the (unmaintained since 2021) repo
+)
+FetchContent_Declare(
+  fmt
+  GIT_REPOSITORY https://github.com/fmtlib/fmt.git
+  GIT_TAG 11.2.0
+)
+FetchContent_Declare(
+  cxxopts
+  GIT_REPOSITORY https://github.com/jarro2783/cxxopts.git
+  GIT_TAG v3.3.1
+)
+FetchContent_Declare(
+  nlohmann_json
+  # The lightweight packaged release asset (headers + a small CMakeLists.txt
+  # that defines the nlohmann_json::nlohmann_json INTERFACE target), rather
+  # than the full git repository with its docs/tests/tooling.
+  URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
+  URL_HASH SHA256=d6c65aca6b1ed68e7a182f4757257b107ae403032760ed6ef121c9d55e81757d
+)
+
+set(REPLXX_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(REPLXX_BUILD_PACKAGE OFF CACHE BOOL "" FORCE)
+set(FMT_TEST OFF CACHE BOOL "" FORCE)
+set(FMT_DOC OFF CACHE BOOL "" FORCE)
+set(CXXOPTS_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(CXXOPTS_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(JSON_BuildTests OFF CACHE BOOL "" FORCE)
+
+# replxx is only ever built static here, regardless of any ambient
+# BUILD_SHARED_LIBS -- save/restore it so it doesn't leak into whatever else
+# FetchContent pulls in.
+set(_rpc_repl_saved_bsl ${BUILD_SHARED_LIBS})
+set(BUILD_SHARED_LIBS OFF)
+FetchContent_MakeAvailable(replxx fmt cxxopts nlohmann_json)
+set(BUILD_SHARED_LIBS ${_rpc_repl_saved_bsl})
+unset(_rpc_repl_saved_bsl)
 
 enable_testing()
 add_subdirectory(tests)
+
+# -----------------------------------------------------------------------------
+# rpc_repl: the interactive REPL / one-shot CLI (docs/PLAN.md component 7).
+# json_value.hpp/io_worker.hpp/repl.hpp are header-only (every function is
+# `inline` or an in-class member definition), so main.cpp is the only
+# translation unit.
+# -----------------------------------------------------------------------------
+add_executable(rpc_repl host/tools/rpc_repl/main.cpp)
+target_link_libraries(rpc_repl PRIVATE serial_rpc replxx::replxx fmt::fmt cxxopts::cxxopts nlohmann_json::nlohmann_json)
+target_compile_options(rpc_repl PRIVATE -Wall -Wextra -Wpedantic)
 
 # -----------------------------------------------------------------------------
 # Host serialport.hpp smoke test (PLAN.md component 4). Links two translation

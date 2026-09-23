@@ -195,7 +195,9 @@ There is a single source of truth for the codec and the framing: the host includ
   - `rpc_repl -p PORT --monitor` only shows traffic.
   - `-p` is optional when `SerialPort::available_ports()` finds exactly one likely board (`usbmodem`/`usbserial`/`ttyACM`/`ttyUSB`/`COM`).
 - **Device-side support:** `rpc.list` returns `[name, signature]` pairs, for example `["set_led","(u8,bool)->nil"]`. The typed thunks generate the signature strings at compile time. Raw handlers report `"(...)"`. On AVR the strings live in PROGMEM where practical.
-- **Files:** `host/tools/rpc_repl/` holds `main.cpp` (cxxopts), `repl.hpp`, `io_worker.hpp` and `json_value.hpp` (conversion between JSON and `Value`). There is a CMake target `rpc_repl`. The JSON conversion and token parsing are unit-tested; the terminal parts are tested manually.
+- **Files:** `host/tools/rpc_repl/` holds `main.cpp` (cxxopts), `repl.hpp`, `io_worker.hpp` and `json_value.hpp` (conversion between JSON and `Value`). There is a CMake target `rpc_repl`. The JSON conversion and token parsing are unit-tested (`tests/test_repl_parse.cpp`, target `rpc_repl_tests`); the terminal parts are tested manually.
+- **Deviation from the plan as originally written:** `json_value.hpp`'s map conversion needs a map `Value`'s raw, ordered entries -- including any non-string keys -- which component 5's `Value` had no way to expose (`as<std::map<std::string,T>>()` only covers string-keyed maps). Rather than re-decoding a re-encoded buffer by hand to work around that, `Value` gained one small additive accessor, `const Map &map() const` (throws TypeError if not a map), documented at its call site in `host/include/serial_rpc.hpp`. Nothing else about component 5's API changed.
+- **Also note:** `RPC::last_rtt()` was changed after this component was written to return `std::chrono::microseconds` instead of milliseconds (USB round trips are commonly sub-millisecond); `rpc_repl` formats it with one decimal place of millisecond precision, e.g. `(0.6 ms)`.
 
 ### 6. Build
 - **CMake** (`cmake -Bbuild -G Ninja && cmake --build build`), with FetchContent for `fmt`, `cxxopts` and `doctest`. Targets:

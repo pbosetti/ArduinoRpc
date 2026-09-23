@@ -264,6 +264,17 @@ public:
     return out;
   }
 
+  /// Direct access to a held map's raw, ordered entries -- including any
+  /// non-string or duplicate keys -- which `as<std::map<std::string,T>>()`
+  /// can't represent (it requires string keys and collapses duplicates).
+  /// Throws TypeError if this Value doesn't hold a map. host/tools/rpc_repl's
+  /// JSON conversion (docs/PLAN.md component 7) is the motivating caller:
+  /// it needs the raw keys, string or not, to render them into JSON.
+  const Map &map() const {
+    if (const auto *p = std::get_if<Map>(&_data)) return *p;
+    throw TypeError("serial_rpc::Value::map(): value is not a map (" + to_string() + ")");
+  }
+
   /// Decodes one MessagePack object from `r`, recursively for array/map
   /// elements. Throws ProtocolError on malformed input, an unsupported wire
   /// type (ext), or nesting deeper than `kMaxDepth`.
