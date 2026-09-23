@@ -1,5 +1,7 @@
 # arduino_rpc
 
+[![CI](https://github.com/pbosetti/arduino_rpc/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/pbosetti/arduino_rpc/actions/workflows/ci.yml)
+
 Typed request/response and notification RPC between a host PC and an
 Arduino, over a single serial line shared with plain text -- using a small,
 dependency-free MsgPack codec of its own. Full design in

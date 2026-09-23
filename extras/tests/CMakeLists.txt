@@ -3,7 +3,7 @@ add_executable(serial_rpc_tests
   test_framing.cpp
 )
 target_link_libraries(serial_rpc_tests PRIVATE serial_rpc doctest::doctest)
-target_compile_options(serial_rpc_tests PRIVATE -Wall -Wextra -Wpedantic)
+serial_rpc_warnings(serial_rpc_tests)
 
 include(${doctest_SOURCE_DIR}/scripts/cmake/doctest.cmake)
 doctest_discover_tests(serial_rpc_tests)
@@ -16,13 +16,13 @@ doctest_discover_tests(serial_rpc_tests)
 # they share doctest TEST_CASE names.
 add_executable(serial_rpc_tests_fixed test_server.cpp)
 target_link_libraries(serial_rpc_tests_fixed PRIVATE serial_rpc doctest::doctest)
-target_compile_options(serial_rpc_tests_fixed PRIVATE -Wall -Wextra -Wpedantic)
+serial_rpc_warnings(serial_rpc_tests_fixed)
 target_compile_definitions(serial_rpc_tests_fixed PRIVATE SERIAL_RPC_USE_STL=0)
 doctest_discover_tests(serial_rpc_tests_fixed TEST_PREFIX "fixed/")
 
 add_executable(serial_rpc_tests_stl test_server.cpp)
 target_link_libraries(serial_rpc_tests_stl PRIVATE serial_rpc doctest::doctest)
-target_compile_options(serial_rpc_tests_stl PRIVATE -Wall -Wextra -Wpedantic)
+serial_rpc_warnings(serial_rpc_tests_stl)
 target_compile_definitions(serial_rpc_tests_stl PRIVATE SERIAL_RPC_USE_STL=1)
 doctest_discover_tests(serial_rpc_tests_stl TEST_PREFIX "stl/")
 
@@ -33,13 +33,13 @@ doctest_discover_tests(serial_rpc_tests_stl TEST_PREFIX "stl/")
 # host<->device round trip on each.
 add_executable(serial_rpc_tests_host_fixed test_rpc.cpp)
 target_link_libraries(serial_rpc_tests_host_fixed PRIVATE serial_rpc doctest::doctest)
-target_compile_options(serial_rpc_tests_host_fixed PRIVATE -Wall -Wextra -Wpedantic)
+serial_rpc_warnings(serial_rpc_tests_host_fixed)
 target_compile_definitions(serial_rpc_tests_host_fixed PRIVATE SERIAL_RPC_USE_STL=0)
 doctest_discover_tests(serial_rpc_tests_host_fixed TEST_PREFIX "host-fixed/")
 
 add_executable(serial_rpc_tests_host_stl test_rpc.cpp)
 target_link_libraries(serial_rpc_tests_host_stl PRIVATE serial_rpc doctest::doctest)
-target_compile_options(serial_rpc_tests_host_stl PRIVATE -Wall -Wextra -Wpedantic)
+serial_rpc_warnings(serial_rpc_tests_host_stl)
 target_compile_definitions(serial_rpc_tests_host_stl PRIVATE SERIAL_RPC_USE_STL=1)
 doctest_discover_tests(serial_rpc_tests_host_stl TEST_PREFIX "host-stl/")
 
@@ -53,5 +53,5 @@ doctest_discover_tests(serial_rpc_tests_host_stl TEST_PREFIX "host-stl/")
 add_executable(rpc_repl_tests test_repl_parse.cpp)
 target_include_directories(rpc_repl_tests PRIVATE ${CMAKE_SOURCE_DIR}/extras/host/tools/rpc_repl)
 target_link_libraries(rpc_repl_tests PRIVATE serial_rpc doctest::doctest nlohmann_json::nlohmann_json)
-target_compile_options(rpc_repl_tests PRIVATE -Wall -Wextra -Wpedantic)
+serial_rpc_warnings(rpc_repl_tests)
 doctest_discover_tests(rpc_repl_tests)

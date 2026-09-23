@@ -10,6 +10,23 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "Build type" FORCE)
 endif()
 
+# Warning flags for our own targets only (third-party targets keep theirs).
+option(SERIAL_RPC_WERROR "Treat warnings in our own code as errors" OFF)
+function(serial_rpc_warnings target)
+  if(MSVC)
+    target_compile_options(${target} PRIVATE /W4 /permissive- /utf-8
+                                             /Zc:__cplusplus)
+    if(SERIAL_RPC_WERROR)
+      target_compile_options(${target} PRIVATE /WX)
+    endif()
+  else()
+    target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
+    if(SERIAL_RPC_WERROR)
+      target_compile_options(${target} PRIVATE -Werror)
+    endif()
+  endif()
+endfunction()
+
 # Shared codec + (later) framing/server/host-RPC headers, available to both
 # the host build and, via arduino-cli --library, the Arduino build.
 add_library(serial_rpc INTERFACE)
@@ -91,7 +108,7 @@ add_subdirectory(extras/tests)
 # -----------------------------------------------------------------------------
 add_executable(rpc_repl extras/host/tools/rpc_repl/main.cpp)
 target_link_libraries(rpc_repl PRIVATE serial_rpc replxx::replxx fmt::fmt cxxopts::cxxopts nlohmann_json::nlohmann_json)
-target_compile_options(rpc_repl PRIVATE -Wall -Wextra -Wpedantic)
+serial_rpc_warnings(rpc_repl)
 
 # -----------------------------------------------------------------------------
 # Host serialport.hpp smoke test (PLAN.md component 4). Links two translation
@@ -104,7 +121,7 @@ add_executable(serialport_smoke
   extras/host/examples/serialport_smoke_tu2.cpp
 )
 target_link_libraries(serialport_smoke PRIVATE serial_rpc)
-target_compile_options(serialport_smoke PRIVATE -Wall -Wextra -Wpedantic)
+serial_rpc_warnings(serialport_smoke)
 
 # -----------------------------------------------------------------------------
 # arduino_install (optional, not part of `all`): copies the Arduino library to

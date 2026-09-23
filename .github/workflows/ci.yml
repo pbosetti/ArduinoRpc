@@ -1,0 +1,83 @@
+# SPDX-License-Identifier: Apache-2.0
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  host:
+    name: Host build & test (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS (AppleClang)
+            os: macos-latest
+            werror: "ON"
+          - name: Linux (Clang)
+            os: ubuntu-latest
+            cc: clang
+            cxx: clang++
+            werror: "ON"
+          - name: Windows (MSVC)
+            os: windows-latest
+            werror: "OFF"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install CMake and Ninja
+        uses: lukka/get-cmake@latest
+
+      - name: Set up MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Configure
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        run: >
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DSERIAL_RPC_WERROR=${{ matrix.werror }}
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  arduino:
+    name: Arduino lint & compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lint library
+        uses: arduino/arduino-lint-action@v2
+        with:
+          compliance: strict
+
+      - name: Compile examples
+        uses: arduino/compile-sketches@v1
+        with:
+          fqbn: ${{ matrix.fqbn }}
+          platforms: |
+            - name: ${{ matrix.platform }}
+          sketch-paths: |
+            - examples
+          libraries: |
+            - source-path: ./
+          enable-warnings-report: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - fqbn: arduino:avr:uno
+            platform: arduino:avr
+          - fqbn: arduino:renesas_uno:minima
+            platform: arduino:renesas_uno
