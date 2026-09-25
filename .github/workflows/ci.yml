@@ -61,6 +61,9 @@ jobs:
         uses: arduino/arduino-lint-action@v3
         with:
           compliance: strict
+          # SerialRPC is in the Library Manager index: lint as an update, not
+          # a new submission (whose unique-name check would flag ourselves).
+          library-manager: update
 
       - name: Compile examples
         uses: arduino/compile-sketches@v1.1.3
