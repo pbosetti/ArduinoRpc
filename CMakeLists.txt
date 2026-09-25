@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.25)
+cmake_minimum_required(VERSION 3.28)
 project(arduino_rpc CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -9,6 +9,8 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "Build type" FORCE)
 endif()
+
+include(GNUInstallDirs)
 
 # Warning flags for our own targets only (third-party targets keep theirs).
 option(SERIAL_RPC_WERROR "Treat warnings in our own code as errors" OFF)
@@ -31,17 +33,20 @@ endfunction()
 # the host build and, via arduino-cli --library, the Arduino build.
 add_library(serial_rpc INTERFACE)
 target_include_directories(serial_rpc INTERFACE
-  ${CMAKE_SOURCE_DIR}/src
-  ${CMAKE_SOURCE_DIR}/extras/host/include
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/extras/host/include>
+  $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 target_compile_features(serial_rpc INTERFACE cxx_std_20)
 
+# Fetched dependencies are declared EXCLUDE_FROM_ALL: only the targets we
+# link get built, and none of their install() rules end up in ours.
 include(FetchContent)
 FetchContent_Declare(
   doctest
   GIT_REPOSITORY https://github.com/doctest/doctest.git
   GIT_TAG v2.4.11
-  SYSTEM # third-party headers: exempt from our warnings
+  SYSTEM EXCLUDE_FROM_ALL # third-party headers: exempt from our warnings
 )
 # doctest 2.4.11's own CMakeLists.txt declares cmake_minimum_required(3.0),
 # which current CMake (>= 4.0) refuses to configure at all. Tell FetchContent
@@ -61,19 +66,19 @@ FetchContent_Declare(
   replxx
   GIT_REPOSITORY https://github.com/AmokHuginnsson/replxx.git
   GIT_TAG release-0.0.4 # latest tagged release; also HEAD of the (unmaintained since 2021) repo
-  SYSTEM
+  SYSTEM EXCLUDE_FROM_ALL
 )
 FetchContent_Declare(
   fmt
   GIT_REPOSITORY https://github.com/fmtlib/fmt.git
   GIT_TAG 11.2.0
-  SYSTEM # third-party headers: exempt from our warnings
+  SYSTEM EXCLUDE_FROM_ALL # third-party headers: exempt from our warnings
 )
 FetchContent_Declare(
   cxxopts
   GIT_REPOSITORY https://github.com/jarro2783/cxxopts.git
   GIT_TAG v3.3.1
-  SYSTEM # third-party headers: exempt from our warnings
+  SYSTEM EXCLUDE_FROM_ALL # third-party headers: exempt from our warnings
 )
 FetchContent_Declare(
   nlohmann_json
@@ -82,7 +87,7 @@ FetchContent_Declare(
   # than the full git repository with its docs/tests/tooling.
   URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
   URL_HASH SHA256=d6c65aca6b1ed68e7a182f4757257b107ae403032760ed6ef121c9d55e81757d
-  SYSTEM
+  SYSTEM EXCLUDE_FROM_ALL
 )
 
 set(REPLXX_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
@@ -143,3 +148,19 @@ add_custom_target(arduino_install
           -P ${CMAKE_CURRENT_SOURCE_DIR}/extras/cmake/arduino_install.cmake
   COMMENT "Installing the SerialRPC Arduino library and Blink sketch"
   VERBATIM)
+
+# -----------------------------------------------------------------------------
+# Install: rpc_repl always; the header-only library's public headers only on
+# request (e.g. `cmake -Bbuild -DSERIAL_RPC_INSTALL_HEADERS=ON`). The headers
+# depend on nothing fetched above, so no third-party headers are installed.
+# -----------------------------------------------------------------------------
+option(SERIAL_RPC_INSTALL_HEADERS "Install the serial_rpc public headers" OFF)
+
+install(TARGETS rpc_repl RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+if(SERIAL_RPC_INSTALL_HEADERS)
+  install(DIRECTORY src/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+          FILES_MATCHING PATTERN "*.h")
+  install(DIRECTORY extras/host/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+          FILES_MATCHING PATTERN "*.hpp")
+endif()

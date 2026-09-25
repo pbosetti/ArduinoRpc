@@ -98,6 +98,8 @@ ctest --test-dir build --output-on-failure
 
 The build produces `rpc_repl`, the header-only `serial_rpc` interface target, and the test executables. CMake fetches dependencies used by the tests and REPL; the Arduino and host libraries themselves remain dependency-free.
 
+`cmake --install build` installs only `rpc_repl` (under `bin/`). Add `-DSERIAL_RPC_INSTALL_HEADERS=ON` at configure time to also install the library's public headers under `include/`. Third-party headers are never installed.
+
 ### 3. Talk to the board
 
 ```console
